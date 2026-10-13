@@ -16,10 +16,10 @@ from app.models import (
     IngestResponse,
     ItemRecord,
     RootResponse,
-    UploadErrorResponse,
-    UploadResponse,
     SystemPromptRequest,
     SystemPromptResponse,
+    UploadErrorResponse,
+    UploadResponse,
 )
 from app.services.chat_service import ChatService
 from app.services.ingest_service import IngestService
@@ -53,6 +53,7 @@ def read_root() -> RootResponse:
             "/get",
             "/chat",
             "/chat/stream",
+            "/users/{userid}/system-prompt",
             "/ingest",
         ],
     )
