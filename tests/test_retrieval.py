@@ -7,8 +7,8 @@ from typing import get_type_hints
 
 import app.retrieval
 from app.retrieval import RetrievalResult, RetrievalService
-from app.retrieval.embeddings import EmbeddingProvider
-from app.retrieval.repository import RetrievalRepository
+from app.retrieval.embeddings import EmbeddingProvider, HashEmbeddingProvider
+from app.retrieval.repository import InMemoryRetrievalRepository, RetrievalRepository
 
 
 class RetrievalPackageTests(unittest.TestCase):
@@ -51,16 +51,30 @@ class RetrievalPackageTests(unittest.TestCase):
             },
         )
 
-    def test_service_contract_is_explicitly_unimplemented(self) -> None:
+    def test_service_contract_and_empty_query(self) -> None:
         hints = get_type_hints(RetrievalService.retrieve)
 
         self.assertEqual(
             hints,
             {"query": str, "limit": int, "return": list[RetrievalResult]},
         )
-        with self.assertRaisesRegex(NotImplementedError, "not implemented"):
-            RetrievalService().retrieve("example query")
+        service = RetrievalService(HashEmbeddingProvider(), InMemoryRetrievalRepository())
+        self.assertEqual(service.retrieve("  "), [])
+        self.assertEqual(service.retrieve("example query", limit=0), [])
 
+    def test_retrieval_ranks_matching_chunks_and_applies_limit(self) -> None:
+        embeddings = HashEmbeddingProvider()
+        repository = InMemoryRetrievalRepository()
+        repository.upsert(1, "doc-a", "The moon orbits the earth", embeddings.embed_document("The moon orbits the earth"))
+        repository.upsert(2, "doc-b", "A recipe for apple pie", embeddings.embed_document("A recipe for apple pie"))
+
+        results = RetrievalService(embeddings, repository).retrieve("moon orbits earth", limit=1)
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].chunk_id, 1)
+        self.assertEqual(results[0].document_id, "doc-a")
+        self.assertGreaterEqual(results[0].similarity, 0.0)
+        self.assertLessEqual(results[0].similarity, 1.0)
 
 if __name__ == "__main__":
     unittest.main()
