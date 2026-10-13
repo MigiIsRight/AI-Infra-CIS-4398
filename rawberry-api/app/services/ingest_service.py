@@ -38,7 +38,7 @@ class IngestService:
             metadata=request.metadata or {},
         )
 
-        self.store.add(item.model_dump())
+        self.store.add(item.model_dump(), owner_id=str(request.userid))
 
         document_id = item.id
         chunks = self._chunk_text(document_id, str(request.userid), request.text)

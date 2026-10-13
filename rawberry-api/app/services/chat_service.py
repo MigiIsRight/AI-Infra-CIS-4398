@@ -26,13 +26,25 @@ class ChatService:
             return GeminiChatClient(self.settings)
         return MockChatClient()
 
-    def get_recent_items(self) -> list[ItemRecord]:
-        return [ItemRecord(**item) for item in self.store.recent_items(3)]
+    def get_recent_items(self, owner_id: str | None = None) -> list[ItemRecord]:
+        return [
+            ItemRecord(**item)
+            for item in self.store.recent_items(3, owner_id=owner_id)
+        ]
 
-    def get_relevant_chunks(self, message: str, limit: int = 3) -> list[str]:
+    def get_relevant_chunks(
+        self,
+        message: str,
+        limit: int = 3,
+        owner_id: str | None = None,
+    ) -> list[str]:
         return [
             result.content
-            for result in self.retrieval_service.retrieve(message, limit=limit)
+            for result in self.retrieval_service.retrieve(
+                message,
+                limit=limit,
+                owner_id=owner_id,
+            )
         ]
 
     def generate_reply_from_message(
@@ -56,10 +68,16 @@ class ChatService:
         return self.llm_client.generate_reply("\n\n".join(prompt_parts))
 
     def generate_reply(self, request: ChatRequest) -> ChatResponse:
-        context_chunks = self.get_relevant_chunks(request.message)
+        context_chunks = self.get_relevant_chunks(
+            request.message,
+            owner_id=str(request.userid),
+        )
         reply = self.generate_reply_from_message(
             request.message,
             context_chunks=context_chunks,
             system_prompt=self.store.get_system_prompt(request.userid),
         )
-        return ChatResponse(reply=reply, recent_items=self.get_recent_items())
+        return ChatResponse(
+            reply=reply,
+            recent_items=self.get_recent_items(owner_id=str(request.userid)),
+        )
