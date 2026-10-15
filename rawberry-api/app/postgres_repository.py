@@ -40,8 +40,8 @@ class PostgresRepository:
 
         with self._connection() as connection:
             connection.execute(
-                "INSERT INTO ingested_item(public_id, content, metadata) VALUES (%s, %s, %s)",
-                (item['id'], item['text'], Jsonb(item.get('metadata', {}))),
+                "INSERT INTO ingested_item(public_id, user_id, content, metadata) VALUES (%s, %s, %s, %s)",
+                (item['id'], item.get('user_id'), item['text'], Jsonb(item.get('metadata', {}))),
             )
 
     def list_items(self) -> list[dict[str, Any]]:
