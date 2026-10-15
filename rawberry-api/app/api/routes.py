@@ -173,7 +173,10 @@ def ingest(request: IngestRequest, service: IngestService = Depends(get_ingest_s
     },
 )
 def upload_document(
-    files: Annotated[list[UploadFile], File(...)],
+    files: Annotated[list[UploadFile], File(
+        ...,
+        json_schema_extra={"items": {"type": "string", "format": "binary"}},
+    )],
     owner_id: Annotated[str | None, Form()] = None,
     service: IngestService = Depends(get_ingest_service),
 ) -> list[UploadResponse]:

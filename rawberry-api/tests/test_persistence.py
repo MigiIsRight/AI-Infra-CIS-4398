@@ -57,3 +57,12 @@ def test_document_listing_and_txt_source_locations():
     assert documents[0]["id"] == upload.json()[0]["document_id"]
     assert documents[0]["chunk_count"] == len(store.list_chunks())
     assert all(chunk["page_number"] is None for chunk in store.list_chunks())
+
+
+def test_upload_schema_marks_array_items_as_binary_files():
+    schema = create_app(store=InMemoryStore()).openapi()
+    body = schema["paths"]["/upload"]["post"]["requestBody"]["content"]["multipart/form-data"]["schema"]
+    model = schema["components"]["schemas"][body["$ref"].split("/")[-1]]
+    files = model["properties"]["files"]
+    assert files["type"] == "array"
+    assert files["items"]["format"] == "binary"
