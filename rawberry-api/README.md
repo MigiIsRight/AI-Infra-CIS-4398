@@ -1,5 +1,10 @@
 # RAWBerry API
 
+Database integration setup and current persistence behavior are documented in
+[PERSISTENCE.md](PERSISTENCE.md). PostgreSQL is selected using `DATABASE_URL`;
+without it, storage remains in memory. The starter-design notes below describe
+the original prototype and planned architecture.
+
 This folder contains the FastAPI backend for the RAWBerry project.
 
 ## Purpose
