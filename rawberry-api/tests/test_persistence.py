@@ -34,11 +34,11 @@ def test_configured_database_failure_does_not_fall_back_to_memory(monkeypatch):
 
 def test_database_errors_have_safe_api_response():
     class UnavailableStore(InMemoryStore):
-        def list_items(self, user_id):
+        def list_documents(self, user_id):
             raise StorageError("private connection details")
 
     with TestClient(create_app(store=UnavailableStore()), headers={'X-User-ID': 'alice'}) as client:
-        response = client.get("/get")
+        response = client.get("/documents")
     assert response.status_code == 503
     assert response.json() == {
         "success": False,

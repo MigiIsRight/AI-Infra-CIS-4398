@@ -2,14 +2,23 @@
 
 Prepared from the working tree on October 8, 2026. These are proposed backlog items, not committed sprint scope. Points are relative estimates for team refinement; owners identify the responsible subteam rather than an assigned person. Sprint groupings indicate sequence, not dates or guaranteed capacity.
 
-## Current baseline
+## Scope update (October 15, 2026)
+
+RAG source content is supplied only through document uploads. The `/ingest` and
+`/get` pasted-text paths and chat's `recent_items` field are retired. Conversation
+questions and replies remain separate from uploaded documents. Authentication is
+owned upstream; this backend enforces user scope supplied through that integration.
+The baseline and sprint proposals below are the original October 8 planning snapshot,
+not a statement that every listed task remains unimplemented.
+
+## Original baseline
 
 The API implements health checks, text ingestion, multi-file uploads with a 25 MB per-file limit, basic TXT chunking, keyword retrieval, optional Vertex AI Gemini calls, per-user in-memory response preferences, and SSE chat lifecycle events. PostgreSQL/pgvector schema files and API tests exist. Storage remains in memory; PDF/DOCX uploads retain bytes but produce no extracted chunks; embedding status remains pending. No frontend implementation is present in this repository.
 
 ## Proposed Sprint 1: align contracts and establish persistence
 
-### RB-01 — Align API, frontend, and database contracts
-**Priority:** P0 · **Estimate:** 3 points · **Owner:** API + Database/RAG · **Dependencies:** None
+### RB-01 â€” Align API, frontend, and database contracts
+**Priority:** P0 Â· **Estimate:** 3 points Â· **Owner:** API + Database/RAG Â· **Dependencies:** None
 
 As an integrating developer, I need agreed identifiers and payloads so uploads, retrieval, and chat work across services.
 
@@ -19,8 +28,8 @@ Acceptance criteria:
 - Define ingestion and retrieval interfaces, including chunk text, document/chunk IDs, filename, nullable page, relevance score, and ownership scope.
 - Publish current request/response examples and error contracts, including `/upload` and required chat fields; update the root endpoint listing and stale README descriptions.
 
-### RB-02 — Add repeatable database migrations
-**Priority:** P0 · **Estimate:** 3 points · **Owner:** Database/RAG · **Dependencies:** RB-01
+### RB-02 â€” Add repeatable database migrations
+**Priority:** P0 Â· **Estimate:** 3 points Â· **Owner:** Database/RAG Â· **Dependencies:** RB-01
 
 As a developer, I need reproducible schema setup so local and deployed environments use the same database structure.
 
@@ -30,8 +39,8 @@ Acceptance criteria:
 - Define the embedding model/dimension configuration and validate vector dimensions before storage.
 - Verify a fresh database setup and an upgrade of an existing database; document commands and environment variables without secrets.
 
-### RB-03 — Replace temporary storage with persistent repositories
-**Priority:** P0 · **Estimate:** 5 points · **Owner:** API + Database/RAG · **Dependencies:** RB-02
+### RB-03 â€” Replace temporary storage with persistent repositories
+**Priority:** P0 Â· **Estimate:** 5 points Â· **Owner:** API + Database/RAG Â· **Dependencies:** RB-02
 
 As a user, I need uploaded documents and preferences to survive API restarts.
 
@@ -41,8 +50,8 @@ Acceptance criteria:
 - Keep in-memory storage available for isolated tests and explicitly configured local development.
 - Verify data survives an API restart and is visible across API instances; roll back database writes on persistence failures and define cleanup for file writes.
 
-### RB-04 — Authenticate requests and enforce owner isolation
-**Priority:** P0 · **Estimate:** 5 points · **Owner:** API · **Dependencies:** RB-01, RB-03
+### RB-04 â€” Authenticate requests and enforce owner isolation
+**Priority:** P0 Â· **Estimate:** 5 points Â· **Owner:** API Â· **Dependencies:** RB-01, RB-03
 
 As a user, I need my documents and preferences to be accessible only to authorized users.
 
@@ -54,8 +63,8 @@ Acceptance criteria:
 
 ## Proposed Sprint 2: complete document ingestion
 
-### RB-05 — Extract text from PDF and DOCX uploads
-**Priority:** P1 · **Estimate:** 5 points · **Owner:** Database/RAG · **Dependencies:** RB-01, RB-03
+### RB-05 â€” Extract text from PDF and DOCX uploads
+**Priority:** P1 Â· **Estimate:** 5 points Â· **Owner:** Database/RAG Â· **Dependencies:** RB-01, RB-03
 
 As a user, I need supported file formats to become searchable content.
 
@@ -66,8 +75,8 @@ Acceptance criteria:
 - Declare scanned-PDF OCR out of scope for this item and report when a document requires OCR.
 - Verify extraction with representative fixtures for each supported format and failure case.
 
-### RB-06 — Implement retrieval-ready chunking
-**Priority:** P1 · **Estimate:** 3 points · **Owner:** Database/RAG · **Dependencies:** RB-05
+### RB-06 â€” Implement retrieval-ready chunking
+**Priority:** P1 Â· **Estimate:** 3 points Â· **Owner:** Database/RAG Â· **Dependencies:** RB-05
 
 As a user, I need relevant passages to retain enough context for useful answers.
 
@@ -77,8 +86,8 @@ Acceptance criteria:
 - Stop assigning chunk indexes as page numbers; retain real page metadata or null.
 - Verify coverage of extracted text, expected overlap, and handling of whitespace-only documents.
 
-### RB-07 — Generate and persist document embeddings
-**Priority:** P1 · **Estimate:** 5 points · **Owner:** Database/RAG · **Dependencies:** RB-02, RB-06
+### RB-07 â€” Generate and persist document embeddings
+**Priority:** P1 Â· **Estimate:** 5 points Â· **Owner:** Database/RAG Â· **Dependencies:** RB-02, RB-06
 
 As a user, I need my uploaded documents indexed for semantic search.
 
@@ -88,8 +97,8 @@ Acceptance criteria:
 - Bound provider requests and retry transient failures without duplicating chunk/model embeddings.
 - Verify a successful indexing run and interrupted-run recovery with mocked provider failures.
 
-### RB-08 — Expose ingestion progress and recovery
-**Priority:** P1 · **Estimate:** 5 points · **Owner:** API + Database/RAG · **Dependencies:** RB-03, RB-05, RB-07
+### RB-08 â€” Expose ingestion progress and recovery
+**Priority:** P1 Â· **Estimate:** 5 points Â· **Owner:** API + Database/RAG Â· **Dependencies:** RB-03, RB-05, RB-07
 
 As a user, I need to know when an upload is searchable and whether processing failed.
 
@@ -102,19 +111,19 @@ Acceptance criteria:
 
 ## Proposed Sprint 3: deliver grounded chat
 
-### RB-09 — Integrate semantic retrieval into chat
-**Priority:** P1 · **Estimate:** 5 points · **Owner:** Database/RAG + API · **Dependencies:** RB-04, RB-07
+### RB-09 â€” Integrate semantic retrieval into chat
+**Priority:** P1 Â· **Estimate:** 5 points Â· **Owner:** Database/RAG + API Â· **Dependencies:** RB-04, RB-07
 
 As a user, I need chat to find relevant passages even when my question uses different wording.
 
 Acceptance criteria:
-- Embed queries and retrieve a configurable top 3–5 chunks through the agreed service interface.
+- Embed queries and retrieve a configurable top 3â€“5 chunks through the agreed service interface.
 - Filter by verified owner and selected document/conversation scope before returning results.
 - Return text and source metadata together, with defined ranking and insufficient-match behavior.
 - Demonstrate retrieval on paraphrased questions and verify that unindexed documents and another user's chunks are excluded.
 
-### RB-10 — Generate grounded answers with traceable citations
-**Priority:** P1 · **Estimate:** 5 points · **Owner:** API · **Dependencies:** RB-09
+### RB-10 â€” Generate grounded answers with traceable citations
+**Priority:** P1 Â· **Estimate:** 5 points Â· **Owner:** API Â· **Dependencies:** RB-09
 
 As a user, I need to see which document passages support an answer.
 
@@ -125,8 +134,8 @@ Acceptance criteria:
 - Validate citation references against retrieved chunks; avoid returning unrelated recent items as implied evidence.
 - Verify supported answers, insufficient context, and misleading instructions embedded in a document.
 
-### RB-11 — Make Gemini failures predictable
-**Priority:** P1 · **Estimate:** 3 points · **Owner:** API · **Dependencies:** RB-01
+### RB-11 â€” Make Gemini failures predictable
+**Priority:** P1 Â· **Estimate:** 3 points Â· **Owner:** API Â· **Dependencies:** RB-01
 
 As a user, I need clear failures when generation is unavailable.
 
@@ -136,8 +145,8 @@ Acceptance criteria:
 - Handle empty or blocked responses explicitly instead of returning a provider object string or echo as a successful real answer.
 - Return safe, consistent errors for `/chat` and a terminal failed event for `/chat/stream`; test configuration, timeout, quota, and empty-response cases.
 
-### RB-12 — Report actual retrieval and generation progress
-**Priority:** P2 · **Estimate:** 3 points · **Owner:** API · **Dependencies:** RB-09, RB-11
+### RB-12 â€” Report actual retrieval and generation progress
+**Priority:** P2 Â· **Estimate:** 3 points Â· **Owner:** API Â· **Dependencies:** RB-09, RB-11
 
 As a user, I need chat status to describe the work happening on my request.
 
@@ -149,8 +158,8 @@ Acceptance criteria:
 
 ## Proposed Sprint 4: conversations and demo readiness
 
-### RB-13 — Persist independent conversation history
-**Priority:** P1 · **Estimate:** 5 points · **Owner:** API + Database/RAG · **Dependencies:** RB-03, RB-04, RB-10
+### RB-13 â€” Persist independent conversation history
+**Priority:** P1 Â· **Estimate:** 5 points Â· **Owner:** API + Database/RAG Â· **Dependencies:** RB-03, RB-04, RB-10
 
 As a user, I need to resume previous chats without mixing their context.
 
@@ -161,8 +170,8 @@ Acceptance criteria:
 - Persist the selected assistant configuration and define supported `data.agent` values rather than silently ignoring them.
 - Verify conversation history survives restart and remains isolated between users and sessions.
 
-### RB-14 — Automate integration checks and prepare Cloud Run deployment
-**Priority:** P1 · **Estimate:** 5 points · **Owner:** API + Infrastructure · **Dependencies:** RB-08, RB-10, RB-11
+### RB-14 â€” Automate integration checks and prepare Cloud Run deployment
+**Priority:** P1 Â· **Estimate:** 5 points Â· **Owner:** API + Infrastructure Â· **Dependencies:** RB-08, RB-10, RB-11
 
 As a team, we need repeatable verification and a reliable demonstration environment.
 
@@ -173,8 +182,8 @@ Acceptance criteria:
 - Demonstrate health/readiness checks, safe structured logs with request IDs, and a smoke test in the agreed environment.
 - Document cost limits, scaling settings, and rollback; deployment remains subject to the team's infrastructure authorization.
 
-### RB-15 — Validate concurrency and enforce capacity limits
-**Priority:** P2 · **Estimate:** 3 points · **Owner:** API + Infrastructure · **Dependencies:** RB-14
+### RB-15 â€” Validate concurrency and enforce capacity limits
+**Priority:** P2 Â· **Estimate:** 3 points Â· **Owner:** API + Infrastructure Â· **Dependencies:** RB-14
 
 As a user, I need the service to remain responsive during the team demonstration.
 
@@ -186,11 +195,11 @@ Acceptance criteria:
 
 ## Later backlog
 
-- **RB-16 — Read-only conversation sharing:** create revocable owner-managed links; recipients can view but cannot modify the original conversation. Depends on RB-04 and RB-13.
-- **RB-17 — Explicit context transfer:** let an owner select history to copy into another conversation, with provenance and context limits. Depends on RB-13.
-- **RB-18 — Grounding evaluation:** define a labeled evaluation set and measure citation correctness and unsupported claims before introducing a user-visible faithfulness score. Depends on RB-10.
-- **RB-19 — Token streaming:** stream generated text incrementally while preserving status events, citations, cancellation, and error handling. Depends on RB-10 through RB-12.
-- **RB-20 — Scanned-document OCR:** assess representative scans, extraction quality, processing time, and cost before adding OCR ingestion. Depends on RB-05 and RB-08.
+- **RB-16 â€” Read-only conversation sharing:** create revocable owner-managed links; recipients can view but cannot modify the original conversation. Depends on RB-04 and RB-13.
+- **RB-17 â€” Explicit context transfer:** let an owner select history to copy into another conversation, with provenance and context limits. Depends on RB-13.
+- **RB-18 â€” Grounding evaluation:** define a labeled evaluation set and measure citation correctness and unsupported claims before introducing a user-visible faithfulness score. Depends on RB-10.
+- **RB-19 â€” Token streaming:** stream generated text incrementally while preserving status events, citations, cancellation, and error handling. Depends on RB-10 through RB-12.
+- **RB-20 â€” Scanned-document OCR:** assess representative scans, extraction quality, processing time, and cost before adding OCR ingestion. Depends on RB-05 and RB-08.
 
 ## Planning and completion rules
 

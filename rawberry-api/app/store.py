@@ -12,7 +12,6 @@ from app.retrieval import rank_chunks
 
 class InMemoryStore:
     def __init__(self) -> None:
-        self._items: list[dict[str, Any]] = []
         self._documents: list[dict[str, Any]] = []
         self._document_contents: dict[str, bytes] = {}
         self._chunks: list[dict[str, Any]] = []
@@ -21,17 +20,6 @@ class InMemoryStore:
         self._turns: dict[str, list[dict[str, Any]]] = {}
         self._lock = RLock()
 
-    def add(self, user_id: str, item: dict[str, Any]) -> None:
-        with self._lock:
-            self._items.append({**deepcopy(item), 'user_id': user_id})
-
-    def list_items(self, user_id: str) -> list[dict[str, Any]]:
-        with self._lock:
-            return [{k: deepcopy(v) for k, v in item.items() if k != 'user_id'}
-                    for item in self._items if item.get('user_id') == user_id]
-
-    def recent_items(self, user_id: str, count: int = 3) -> list[dict[str, Any]]:
-        return self.list_items(user_id)[-count:] if count > 0 else []
 
     def save_documents(self, user_id: str, documents: list[tuple[dict[str, Any], bytes, list[dict[str, Any]]]]) -> None:
         prepared = deepcopy(documents)

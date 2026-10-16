@@ -10,11 +10,6 @@ class RequestModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class IngestRequest(RequestModel):
-    text: str = Field(min_length=1)
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-
 class DocumentRecord(BaseModel):
     id: str
     user_id: str
@@ -64,7 +59,6 @@ class ChatResponse(BaseModel):
     conversation_id: str
     turn_id: str
     reply: str
-    recent_items: list[dict[str, Any]]
 
 
 class ChatStatusEvent(BaseModel):

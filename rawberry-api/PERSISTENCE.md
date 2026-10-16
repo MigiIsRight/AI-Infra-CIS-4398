@@ -30,7 +30,7 @@ credentials must be supplied through environment configuration, not committed fi
 | `document` | Public UUID, internal BIGINT ID, string `user_id`, file metadata |
 | `document_content` | Original bytes as BYTEA, linked to the document |
 | `chunk` | TXT passages linked to their parent document; ownership inherited through that relationship |
-| `ingested_item` | Plain-text items, metadata, insertion order, string `user_id` |
+| `ingested_item` | Legacy pasted text retained for compatibility; no current API reads or writes |
 | `user_preference` | Prompt keyed by string `user_id` |
 | `chat_session` | Owned conversation with public UUID and precise timestamps |
 | `chat_turn` | Ordered user message, assistant reply, generation state, timestamps |
@@ -42,7 +42,9 @@ generation outcome atomic without populating a second transcript representation.
 Future citation integration must explicitly reconcile that legacy schema.
 
 All repository data operations require a user ID. PostgreSQL filters ownership
-before returning content; chunks are scoped through the parent document. There is
+before returning content; chunks are scoped through the parent document. `/upload`
+is the only source-content entry point; `/ingest`, `/get`, and `recent_items` have
+been removed. Existing `ingested_item` data is retained but never used for RAG. There is
 no unscoped listing or retrieval method in the repository protocol. This is application
 scoping, not database row-level security. Original file bytes, metadata, and chunks
 commit together for an upload batch. PostgreSQL backups must include original bytes.

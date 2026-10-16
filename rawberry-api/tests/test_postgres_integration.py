@@ -63,8 +63,6 @@ def test_data_survives_application_recreation_and_is_shared(database_url, monkey
     monkeypatch.setenv("DATABASE_URL", database_url)
     monkeypatch.setenv("USE_MOCK_CHAT", "true")
     with TestClient(create_app(), headers={'X-User-ID': 'alice'}) as first:
-        ingested = first.post("/ingest", json={"text": "saved text", "metadata": {"source": "test"}})
-        assert ingested.status_code == 201
         uploaded = first.post("/upload", files=[
             ("files", ("notes.txt", b"alpha beta gamma", "text/plain")),
             ("files", ("paper.pdf", b"%PDF-1.7 example", "application/pdf")),
@@ -72,7 +70,6 @@ def test_data_survives_application_recreation_and_is_shared(database_url, monkey
         assert uploaded.status_code == 200
         assert first.put("/me/system-prompt", json={"prompt": "Be concise"}).status_code == 200
         with TestClient(create_app(), headers={'X-User-ID': 'alice'}) as second:
-            assert second.get("/get").json()["items"] == [ingested.json()["item"]]
             assert len(second.get("/documents").json()) == 2
 
     # New app/connection after both previous apps have shut down.
@@ -134,10 +131,10 @@ def test_legacy_ownership_is_quarantined(database_url):
     import psycopg
     repository = PostgresRepository(database_url)
     assert repository.list_documents('42') == []
-    assert repository.list_items('42') == []
     assert repository.get_system_prompt('42') == ''
     with psycopg.connect(database_url) as connection:
         assert connection.execute('SELECT legacy_user_id, user_id FROM document WHERE id = 100').fetchone() == (42, None)
+        assert connection.execute('SELECT count(*) FROM ingested_item').fetchone()[0] == 1  # Legacy text is retained, not exposed.
         assert connection.execute('SELECT system_prompt FROM legacy_user_preference WHERE user_id = 42').fetchone()[0] == 'legacy preference'
 
 

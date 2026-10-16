@@ -37,9 +37,9 @@ def upload(client, text=b'alpha gamma alice secret', user='alice', name='notes.t
 
 def test_public_endpoints_and_isolated_storage():
     a, b = create_app(store=InMemoryStore()), create_app(store=InMemoryStore())
-    a.state.store.add('alice', {'id': 'one', 'text': 'alpha', 'metadata': {}})
-    assert len(a.state.store.list_items('alice')) == 1
-    assert b.state.store.list_items('alice') == []
+    a.state.store.set_system_prompt('alice', 'Concise')
+    assert a.state.store.get_system_prompt('alice') == 'Concise'
+    assert b.state.store.get_system_prompt('alice') == ''
     with TestClient(a) as client:
         assert client.get('/health').json() == {'status': 'healthy'}
         root = client.get('/').json()
@@ -48,9 +48,9 @@ def test_public_endpoints_and_isolated_storage():
 
 
 @pytest.mark.parametrize('method,path,body', [
-    ('get', '/get', None), ('get', '/documents', None), ('get', '/conversations', None),
+    ('get', '/documents', None), ('get', '/conversations', None),
     ('get', '/me/system-prompt', None), ('put', '/me/system-prompt', {'prompt': 'hi'}),
-    ('post', '/ingest', {'text': 'hello'}), ('post', '/conversations', {}),
+    ('post', '/conversations', {}),
     ('post', '/chat', {'conversation_id': str(uuid4()), 'message': 'hi'}),
     ('post', '/chat/stream', {'conversation_id': str(uuid4()), 'message': 'hi'}),
     ('get', '/conversations/' + str(uuid4()) + '/messages', None),
@@ -67,28 +67,31 @@ def test_upload_requires_user_context():
 
 @pytest.mark.parametrize('identifier', ['', ' ', ' alice', 'alice ', 'a b', 'a' * 129])
 def test_invalid_user_context_rejected(client, identifier):
-    assert client.get('/get', headers={'X-User-ID': identifier}).status_code == 422
+    assert client.get('/documents', headers={'X-User-ID': identifier}).status_code == 422
 
 
 def test_duplicate_identity_rejected():
     with TestClient(create_app(store=InMemoryStore())) as client:
-        assert client.get('/get', headers=[('X-User-ID', 'alice'), ('X-User-ID', 'bob')]).status_code == 422
+        assert client.get('/documents', headers=[('X-User-ID', 'alice'), ('X-User-ID', 'bob')]).status_code == 422
 
 
 def test_identity_is_case_sensitive_and_not_numeric(client):
     for user in ['42', '042', 'Alice', 'alice']:
-        assert client.post('/ingest', headers={'X-User-ID': user}, json={'text': user}).status_code == 201
+        assert upload(client, text=user.encode(), user=user).status_code == 200
     for user in ['42', '042', 'Alice', 'alice']:
-        assert [i['text'] for i in client.get('/get', headers={'X-User-ID': user}).json()['items']] == [user]
+        documents = client.get('/documents', headers={'X-User-ID': user}).json()
+        assert len(documents) == 1
+        assert documents[0]['user_id'] == user
+        assert client.app.state.store.get_document_content(user, documents[0]['id']) == user.encode()
+
 
 
 def test_removed_identity_fields_and_old_contract_rejected(client):
-    assert client.post('/ingest', json={'text': 'hello', 'userid': 'bob'}).status_code == 422
     assert client.post('/chat', json={'userid': 42, 'data': {'window': 1, 'agent': 'test'}, 'message': 'hello'}).status_code == 422
     assert client.post('/upload', files=[('files', ('a.txt', b'hello', 'text/plain'))], data={'owner_id': 'bob'}).status_code == 422
     assert client.put('/me/system-prompt', json={'prompt': 'hello', 'user_id': 'bob'}).status_code == 422
     assert client.get('/users/bob/system-prompt').status_code == 404
-    assert client.get('/get?user_id=bob').status_code == 422
+    assert client.get('/documents?user_id=bob').status_code == 422
 
 
 def exercise_isolation(store):
@@ -101,13 +104,11 @@ def exercise_isolation(store):
     app.dependency_overrides[get_chat_service] = lambda: ChatService(store, llm_client=CapturingLLM())
     with TestClient(app, headers={'X-User-ID': 'alice'}) as client:
         for user in ['alice', 'bob']:
-            assert client.post('/ingest', headers={'X-User-ID': user}, json={'text': user + '-item'}).json()['count'] == 1
             assert client.put('/me/system-prompt', headers={'X-User-ID': user}, json={'prompt': user + '-preference'}).status_code == 200
             assert upload(client, text=('gamma ' + user + '-document').encode(), user=user).status_code == 200
         first, second, other = conversation(client), conversation(client), conversation(client, 'bob')
         assert len(client.get('/conversations').json()) == 2
         assert len(client.get('/documents').json()) == 1
-        assert client.get('/get').json()['items'][0]['text'] == 'alice-item'
         assert client.get('/me/system-prompt').json() == {'user_id': 'alice', 'prompt': 'alice-preference'}
         assert client.get('/conversations/' + other + '/messages').status_code == 404
         assert ask(client, other).status_code == 404
@@ -115,7 +116,7 @@ def exercise_isolation(store):
         assert ask(client, str(uuid4())).status_code == 404
         first_reply = ask(client, first, 'gamma first-conversation-only')
         assert first_reply.status_code == 200
-        assert first_reply.json()['recent_items'][0]['text'] == 'alice-item'
+        assert 'recent_items' not in first_reply.json()
         assert 'alice-document' in captured[-1] and 'bob-document' not in captured[-1]
         assert 'alice-preference' in captured[-1] and 'bob-preference' not in captured[-1]
         assert ask(client, first, 'follow-up').status_code == 200
@@ -146,6 +147,7 @@ def test_stream_events_and_persisted_history(client):
     assert [e['status'] for e in events] == ['received', 'generating', 'completed']
     assert len({e['request_id'] for e in events}) == 1
     assert events[-1]['response']['reply'] == 'You said: hello'
+    assert set(events[-1]['response']) == {'conversation_id', 'turn_id', 'reply'}
     assert len(client.get('/conversations/' + identifier + '/messages').json()) == 2
 
 
@@ -227,8 +229,8 @@ def test_upload_batch_validation_and_size_limit(client, monkeypatch):
                                             ('files', ('b.pdf', b'invalid', 'application/pdf'))])
     assert response.status_code == 400
     assert client.app.state.store.list_documents('alice') == []
-    from app.services.ingest_service import IngestService
-    monkeypatch.setattr(IngestService, 'MAX_FILE_SIZE_BYTES', 4)
+    from app.services.document_service import DocumentService
+    monkeypatch.setattr(DocumentService, 'MAX_FILE_SIZE_BYTES', 4)
     assert upload(client, b'12345').status_code == 413
     assert client.app.state.store.list_documents('alice') == []
 
@@ -267,10 +269,24 @@ def test_model_history_is_bounded_and_excludes_failed_turns():
     assert len(llm.generate_reply.call_args.args[0]) < 12000
 
 
-def test_metadata_cannot_override_ownership(client):
-    response = client.post('/ingest', json={'text': 'private', 'metadata': {'user_id': 'bob'}})
-    assert response.status_code == 201
-    assert client.get('/get', headers={'X-User-ID': 'bob'}).json()['count'] == 0
+def test_document_upload_is_the_only_source_entry_point(client):
+    schema = client.app.openapi()
+    assert '/ingest' not in schema['paths'] and '/get' not in schema['paths']
+    assert 'IngestRequest' not in schema['components']['schemas']
+    assert client.post('/ingest', json={'text': 'private'}).status_code == 404
+    assert client.get('/get').status_code == 404
+    advertised = client.get('/').json()['available_endpoints']
+    assert '/ingest' not in advertised and '/get' not in advertised
+    assert '/upload' in advertised
+    assert upload(client, b'gamma uploaded document').status_code == 200
+    identifier = conversation(client)
+    response = ask(client, identifier, 'gamma')
+    assert response.status_code == 200
+    assert 'gamma uploaded document' in response.json()['reply']
+    assert set(response.json()) == {'conversation_id', 'turn_id', 'reply'}
+    history = client.get('/conversations/' + identifier + '/messages').json()
+    assert len(history) == 2
+
 
 
 def test_openapi_exposes_header_on_every_data_endpoint(client):

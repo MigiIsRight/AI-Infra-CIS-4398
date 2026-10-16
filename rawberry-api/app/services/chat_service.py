@@ -49,7 +49,6 @@ class ChatService:
                 message = 'Conversation history (prior messages):\n' + '\n'.join(reversed(history)) + '\nCurrent message:\n' + message
             if preferences:
                 message = f'User response preferences (follow when relevant):\n{preferences}\n\nUser message:\n{message}'
-            recent = self.store.recent_items(user_id, 3)
             reply = self.llm_client.generate_reply(message)
         except Exception as exc:
             try:
@@ -60,4 +59,4 @@ class ChatService:
                 raise
             raise GenerationError() from exc
         self.store.finish_turn(user_id, conversation_id, turn['id'], reply)
-        return ChatResponse(conversation_id=conversation_id, turn_id=turn['id'], reply=reply, recent_items=recent)
+        return ChatResponse(conversation_id=conversation_id, turn_id=turn['id'], reply=reply)
