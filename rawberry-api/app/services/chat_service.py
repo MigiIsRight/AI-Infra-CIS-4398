@@ -2,85 +2,61 @@ import json
 import logging
 
 from app.config import Settings, get_settings
-from app.models import ChatRequest, ChatResponse, ItemRecord
-from app.retrieval.embeddings import HashEmbeddingProvider
-from app.retrieval.service import RetrievalService
+from app.repository import Repository, StorageError, ConversationBusy
 from app.services.gemini_service import GeminiChatClient, MockChatClient
-from app.repository import Repository
+from app.user_models import ChatRequest, ChatResponse
+
+logger = logging.getLogger(__name__)
+
+
+class GenerationError(Exception):
+    pass
 
 
 class ChatService:
-    def __init__(
-        self,
-        store: Repository,
-        settings: Settings | None = None,
-        llm_client=None,
-    ) -> None:
+    def __init__(self, store: Repository, settings: Settings | None = None, llm_client=None) -> None:
         self.store = store
         self.settings = settings or get_settings()
         self.llm_client = llm_client or self._build_llm_client()
-        self.retrieval_service = RetrievalService(
-            HashEmbeddingProvider(),
-            store.retrieval_repository,
-        )
 
     def _build_llm_client(self):
-        if GeminiChatClient(self.settings).should_use_real_client():
-            return GeminiChatClient(self.settings)
-        return MockChatClient()
+        client = GeminiChatClient(self.settings)
+        return client if client.should_use_real_client() else MockChatClient()
 
-    def get_recent_items(self, owner_id: str | None = None) -> list[ItemRecord]:
-        return [
-            ItemRecord(**item)
-            for item in self.store.recent_items(3, owner_id=owner_id)
-        ]
+    def prepare_turn(self, user_id: str, request: ChatRequest) -> dict:
+        return self.store.start_turn(user_id, str(request.conversation_id), request.message)
 
-    def get_relevant_chunks(
-        self,
-        message: str,
-        limit: int = 3,
-        owner_id: str | None = None,
-    ) -> list[str]:
-        return [
-            result.content
-            for result in self.retrieval_service.retrieve(
-                message,
-                limit=limit,
-                owner_id=owner_id,
-            )
-        ]
-
-    def generate_reply_from_message(
-        self,
-        message: str,
-        context_chunks: list[str] | None = None,
-        system_prompt: str = "",
-    ) -> str:
-        prompt_parts: list[str] = []
-        if system_prompt:
-            prompt_parts.append(
-                "User response preferences (follow when relevant):\n" + system_prompt
-            )
-        if context_chunks:
-            prompt_parts.append(
-                "Use the following document context to answer the question. "
-                "If it does not contain the answer, say so.\n"
-                + "\n\n".join(context_chunks)
-            )
-        prompt_parts.append(("User question:\n" if prompt_parts else "") + message)
-        return self.llm_client.generate_reply("\n\n".join(prompt_parts))
-
-    def generate_reply(self, request: ChatRequest) -> ChatResponse:
-        context_chunks = self.get_relevant_chunks(
-            request.message,
-            owner_id=str(request.userid),
-        )
-        reply = self.generate_reply_from_message(
-            request.message,
-            context_chunks=context_chunks,
-            system_prompt=self.store.get_system_prompt(request.userid),
-        )
-        return ChatResponse(
-            reply=reply,
-            recent_items=self.get_recent_items(owner_id=str(request.userid)),
-        )
+    def generate_reply(self, user_id: str, request: ChatRequest, turn: dict | None = None) -> ChatResponse:
+        conversation_id = str(request.conversation_id)
+        turn = turn if turn is not None else self.prepare_turn(user_id, request)
+        try:
+            chunks = self.store.search_chunks(user_id, request.message, limit=3)
+            preferences = self.store.get_system_prompt(user_id)
+            message = request.message
+            if chunks:
+                context = ' '.join(chunk['text'] for chunk in chunks)
+                message = f'Use the following document context to answer the question: {context}. Question: {message}'
+            # Only completed turns from this conversation, bounded by count and size.
+            history = []
+            remaining = 12000
+            for previous in reversed(turn['history']):
+                entry = json.dumps({'user': previous['prompt'], 'assistant': previous['reply']})
+                if len(entry) > remaining:
+                    break
+                history.append(entry)
+                remaining -= len(entry)
+            if history:
+                message = 'Conversation history (prior messages):\n' + '\n'.join(reversed(history)) + '\nCurrent message:\n' + message
+            if preferences:
+                message = f'User response preferences (follow when relevant):\n{preferences}\n\nUser message:\n{message}'
+            reply = self.llm_client.generate_reply(message)
+        except Exception as exc:
+            try:
+                self.store.finish_turn(user_id, conversation_id, turn['id'], None)
+            except (StorageError, ConversationBusy):
+                logger.warning('Could not record failed generation; pending turn will expire.')
+            if isinstance(exc, StorageError):
+                raise
+            raise GenerationError() from exc
+        self.store.finish_turn(user_id, conversation_id, turn['id'], reply)
+        return ChatResponse(conversation_id=conversation_id, turn_id=turn['id'], reply=reply)

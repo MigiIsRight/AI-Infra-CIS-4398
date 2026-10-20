@@ -40,13 +40,14 @@ class RetrievalPackageTests(unittest.TestCase):
 
         self.assertEqual(
             list(signature(RetrievalRepository.search).parameters),
-            ["self", "embedding", "limit"],
+            ["self", "embedding", "limit", "owner_id"],
         )
         self.assertEqual(
             hints,
             {
                 "embedding": list[float],
                 "limit": int,
+                "owner_id": str | None,
                 "return": list[RetrievalResult],
             },
         )
@@ -56,7 +57,7 @@ class RetrievalPackageTests(unittest.TestCase):
 
         self.assertEqual(
             hints,
-            {"query": str, "limit": int, "return": list[RetrievalResult]},
+            {"query": str, "limit": int, "owner_id": str | None, "return": list[RetrievalResult]},
         )
         service = RetrievalService(HashEmbeddingProvider(), InMemoryRetrievalRepository())
         self.assertEqual(service.retrieve("  "), [])
@@ -75,6 +76,17 @@ class RetrievalPackageTests(unittest.TestCase):
         self.assertEqual(results[0].document_id, "doc-a")
         self.assertGreaterEqual(results[0].similarity, 0.0)
         self.assertLessEqual(results[0].similarity, 1.0)
+
+    def test_retrieval_excludes_other_owners(self) -> None:
+        embeddings = HashEmbeddingProvider()
+        repository = InMemoryRetrievalRepository()
+        for index, owner in enumerate(['alice', 'bob']):
+            text = f'The moon orbits Earth: {owner}'
+            repository.upsert(index, f'doc-{owner}', text, embeddings.embed_document(text), owner_id=owner)
+        service = RetrievalService(embeddings, repository)
+        self.assertEqual([r.document_id for r in service.retrieve('moon', owner_id='alice')], ['doc-alice'])
+        self.assertEqual([r.document_id for r in service.retrieve('moon', owner_id='bob')], ['doc-bob'])
+        self.assertEqual(service.retrieve('moon'), [])
 
 if __name__ == "__main__":
     unittest.main()

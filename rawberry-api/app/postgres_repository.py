@@ -12,7 +12,7 @@ from uuid import uuid4
 
 from app.conversation import TURN_TIMEOUT_SECONDS, messages_from_turns
 from app.repository import ConversationBusy, ResourceNotFound
-from app.retrieval import rank_chunks
+from app.retrieval.chunk_search import search_owned_chunks
 
 
 class PostgresRepository:
@@ -93,7 +93,7 @@ class PostgresRepository:
             ).fetchall()
 
     def search_chunks(self, user_id: str, query: str, limit: int = 3) -> list[dict[str, Any]]:
-        return rank_chunks(self.list_chunks(user_id), query, limit)
+        return search_owned_chunks(user_id, self.list_chunks(user_id), query, limit)
 
     def get_system_prompt(self, user_id: str) -> str:
         with self._connection() as connection:
