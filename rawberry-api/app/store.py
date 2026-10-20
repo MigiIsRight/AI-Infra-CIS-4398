@@ -1,4 +1,14 @@
+"""User-scoped temporary repository for development and isolated tests."""
+from copy import deepcopy
+from datetime import datetime, timezone
+from threading import RLock
 from typing import Any
+from uuid import uuid4
+
+from app.conversation import TURN_TIMEOUT_SECONDS, messages_from_turns
+from app.repository import ConversationBusy, ResourceNotFound
+from app.retrieval import rank_chunks
+
 
 from app.retrieval.repository import InMemoryRetrievalRepository
 
@@ -7,7 +17,6 @@ from app.retrieval.repository import InMemoryRetrievalRepository
 # real vector database and RAG retrieval system.
 class InMemoryStore:
     def __init__(self) -> None:
-        # Start with an empty temporary collection.
         self._items: list[dict[str, Any]] = []
         self._item_owners: dict[str, str | None] = {}
         self._documents: list[dict[str, Any]] = []

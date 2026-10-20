@@ -34,10 +34,10 @@ def test_configured_database_failure_does_not_fall_back_to_memory(monkeypatch):
 
 def test_database_errors_have_safe_api_response():
     class UnavailableStore(InMemoryStore):
-        def list_items(self):
+        def list_items(self, user_id):
             raise StorageError("private connection details")
 
-    with TestClient(create_app(store=UnavailableStore())) as client:
+    with TestClient(create_app(store=UnavailableStore()), headers={'X-User-ID': 'alice'}) as client:
         response = client.get("/get")
     assert response.status_code == 503
     assert response.json() == {
@@ -49,14 +49,14 @@ def test_database_errors_have_safe_api_response():
 
 def test_document_listing_and_txt_source_locations():
     store = InMemoryStore()
-    with TestClient(create_app(store=store)) as client:
+    with TestClient(create_app(store=store), headers={'X-User-ID': 'alice'}) as client:
         upload = client.post("/upload", files=[("files", ("notes.txt", b"alpha " * 400, "text/plain"))])
         assert upload.status_code == 200
         documents = client.get("/documents").json()
     assert len(documents) == 1
     assert documents[0]["id"] == upload.json()[0]["document_id"]
-    assert documents[0]["chunk_count"] == len(store.list_chunks())
-    assert all(chunk["page_number"] is None for chunk in store.list_chunks())
+    assert documents[0]["chunk_count"] == len(store.list_chunks('alice'))
+    assert all(chunk["page_number"] is None for chunk in store.list_chunks('alice'))
 
 
 def test_upload_schema_marks_array_items_as_binary_files():

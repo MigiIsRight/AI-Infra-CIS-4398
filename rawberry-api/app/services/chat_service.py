@@ -1,3 +1,6 @@
+import json
+import logging
+
 from app.config import Settings, get_settings
 from app.models import ChatRequest, ChatResponse, ItemRecord
 from app.retrieval.embeddings import HashEmbeddingProvider

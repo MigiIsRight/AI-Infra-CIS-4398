@@ -56,7 +56,7 @@ class IngestService:
         return IngestResponse(
             message="Item ingested successfully",
             item=item,
-            count=len(self.store.list_items()),
+            count=len(self.store.list_items(user_id)),
         )
 
     def _validate_file_content(self, filename: str, raw_bytes: bytes) -> str | None:
@@ -86,7 +86,7 @@ class IngestService:
             },
         )
 
-    def _chunk_text(self, document_id: str, owner_id: str | None, text: str) -> list[DocumentChunk]:
+    def _chunk_text(self, document_id: str, text: str) -> list[DocumentChunk]:
         max_chars = 900
         chunks: list[DocumentChunk] = []
         for idx, start in enumerate(range(0, len(text), max_chars)):
@@ -96,7 +96,6 @@ class IngestService:
             chunks.append(
                 DocumentChunk(
                     document_id=document_id,
-                    owner_id=owner_id,
                     chunk_index=idx,
                     page_number=None,
                     text=chunk_text,
@@ -105,7 +104,7 @@ class IngestService:
             )
         return chunks
 
-    def upload_document(self, files: list[UploadFile], owner_id: str | None = None) -> list[UploadResponse]:
+    def upload_document(self, user_id: str, files: list[UploadFile]) -> list[UploadResponse]:
         if not files:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -148,13 +147,13 @@ class IngestService:
             raw_bytes = uploaded_file.file.read(self.MAX_FILE_SIZE_BYTES + 1)
             text = self._validate_file_content(filename, raw_bytes)
             document_id = str(uuid4())
-            chunks = self._chunk_text(document_id, owner_id, text) if text is not None else []
+            chunks = self._chunk_text(document_id, text) if text is not None else []
             document = DocumentRecord(
                 id=document_id,
                 filename=filename,
                 file_type=ext,
                 size_bytes=size_bytes,
-                owner_id=owner_id,
+                user_id=user_id,
                 chunk_count=len(chunks),
                 embedding_status="pending",
                 metadata={"source": "upload_endpoint"},
@@ -182,5 +181,5 @@ class IngestService:
                 )
             )
 
-        self.store.save_documents(documents)
+        self.store.save_documents(user_id, documents)
         return responses

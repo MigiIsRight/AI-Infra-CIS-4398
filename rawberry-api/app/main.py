@@ -7,7 +7,8 @@ from fastapi.responses import JSONResponse
 
 from app.api.routes import router
 from app.config import get_settings
-from app.repository import Repository, StorageError
+from app.repository import ConversationBusy, Repository, ResourceNotFound, StorageError
+from app.services.chat_service import GenerationError
 from app.store import InMemoryStore
 
 
@@ -30,6 +31,18 @@ def create_app(store: Repository | None = None) -> FastAPI:
 
     app = FastAPI(title="RAWBerry API Starter", lifespan=lifespan)
     app.state.store = store
+
+    @app.exception_handler(ResourceNotFound)
+    async def not_found_handler(request: Request, exc: ResourceNotFound) -> JSONResponse:
+        return JSONResponse(status_code=404, content={"success": False, "error_code": "NOT_FOUND", "message": "Resource not found."})
+
+    @app.exception_handler(ConversationBusy)
+    async def busy_handler(request: Request, exc: ConversationBusy) -> JSONResponse:
+        return JSONResponse(status_code=409, content={"success": False, "error_code": "CONVERSATION_BUSY", "message": "Conversation generation is pending or this turn has expired."})
+
+    @app.exception_handler(GenerationError)
+    async def generation_handler(request: Request, exc: GenerationError) -> JSONResponse:
+        return JSONResponse(status_code=502, content={"success": False, "error_code": "GENERATION_FAILED", "message": "The response could not be generated."})
 
     @app.exception_handler(StorageError)
     async def storage_exception_handler(request: Request, exc: StorageError) -> JSONResponse:

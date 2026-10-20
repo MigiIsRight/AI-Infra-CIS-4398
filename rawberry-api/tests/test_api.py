@@ -1,7 +1,12 @@
+import json
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
+from uuid import uuid4
 
+import pytest
 from fastapi.testclient import TestClient
 
+from app.api.routes import get_chat_service
 from app.config import Settings
 from app.main import create_app
 
@@ -234,80 +239,91 @@ def test_chat_route_uses_configured_gemini_client(monkeypatch):
         },
     )
     assert response.status_code == 200
-    assert response.json()["reply"] == "gemini reply"
+    events = [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith('data: ')]
+    assert [e['status'] for e in events] == ['received', 'generating', 'completed']
+    assert len({e['request_id'] for e in events}) == 1
+    assert events[-1]['response']['reply'] == 'You said: hello'
+    assert len(client.get('/conversations/' + identifier + '/messages').json()) == 2
 
 
-def test_upload_endpoint_accepts_text_file_and_returns_chunk_summary():
-    app = create_app()
-    client = TestClient(app)
+@pytest.mark.parametrize('stream', [False, True])
+def test_generation_failure_is_recorded_and_can_be_retried(stream):
+    store = InMemoryStore()
+    app = create_app(store=store)
+    llm = MagicMock()
+    llm.generate_reply.side_effect = RuntimeError('private provider details')
+    app.dependency_overrides[get_chat_service] = lambda: ChatService(store, llm_client=llm)
+    with TestClient(app, headers={'X-User-ID': 'alice'}) as client:
+        identifier = conversation(client)
+        response = ask(client, identifier, stream=stream)
+        assert response.status_code == (200 if stream else 502)
+        assert 'private provider details' not in response.text
+        if stream:
+            assert '"status":"failed"' in response.text
+            assert '"status":"completed"' not in response.text
+        messages = client.get('/conversations/' + identifier + '/messages').json()
+        assert len(messages) == 1 and messages[0]['status'] == 'failed'
+        llm.generate_reply.side_effect = None
+        llm.generate_reply.return_value = 'recovered'
+        assert ask(client, identifier).status_code == 200
+        messages = client.get('/conversations/' + identifier + '/messages').json()
+        assert [m['status'] for m in messages] == ['failed', 'completed', 'completed']
 
-    response = client.post(
-        "/upload",
-        files=[("files", ("sample.txt", b"alpha beta gamma delta", "text/plain"))],
-        data={"owner_id": "user-123"},
-    )
 
+def test_concurrent_turns_and_abandoned_turn_recovery(client):
+    store = client.app.state.store
+    identifier = conversation(client)
+    old = store.start_turn('alice', identifier, 'first')
+    assert ask(client, identifier).status_code == 409
+    assert ask(client, identifier, stream=True).status_code == 409
+    store._turns[identifier][0]['created_at'] = datetime.now(timezone.utc) - timedelta(minutes=6)
+    assert ask(client, identifier).status_code == 200
+    with pytest.raises(ConversationBusy):
+        store.finish_turn('alice', identifier, old['id'], 'late response')
+    assert store.list_messages('alice', identifier)[0]['status'] == 'failed'
+
+
+def test_preferences_update_clear_and_validation(client):
+    assert client.get('/me/system-prompt').json()['prompt'] == ''
+    assert client.put('/me/system-prompt', json={'prompt': 'Concise'}).status_code == 200
+    assert client.get('/me/system-prompt', headers={'X-User-ID': 'bob'}).json()['prompt'] == ''
+    assert client.put('/me/system-prompt', json={'prompt': ''}).status_code == 200
+    assert client.get('/me/system-prompt').json()['prompt'] == ''
+    assert client.put('/me/system-prompt', json={'prompt': 'x' * 2001}).status_code == 422
+    assert client.post('/chat', json={'conversation_id': conversation(client), 'message': ''}).status_code == 422
+
+
+def test_upload_retains_bytes_and_txt_chunks(client):
+    response = upload(client, b'hello gamma')
     assert response.status_code == 200
-    payload = response.json()[0]
-    assert payload["success"] is True
-    assert payload["status"] == "uploaded"
-    assert payload["filename"] == "sample.txt"
-    assert payload["chunk_count"] >= 1
-    assert payload["document_id"]
+    document = response.json()[0]
+    assert document['chunk_count'] == 1 and document['embedding_status'] == 'pending'
+    store = client.app.state.store
+    assert store.get_document_content('alice', document['document_id']) == b'hello gamma'
+    assert store.list_chunks('alice')[0]['page_number'] is None
+    assert store.list_chunks('bob') == []
+    assert upload(client, b'%PDF-1.7 sample', name='paper.pdf').json()[0]['chunk_count'] == 0
 
 
-def test_upload_endpoint_rejects_unsupported_file_type():
-    app = create_app()
-    client = TestClient(app)
+@pytest.mark.parametrize('name,content,status,code', [
+    ('a.csv', b'a,b', 400, 'INVALID_FILE_TYPE'),
+    ('a.txt', b'', 400, 'EMPTY_FILE'),
+    ('a.txt', b'\xff\xfe', 400, 'INVALID_TEXT_ENCODING'),
+    ('a.pdf', b'not pdf', 400, 'INVALID_FILE_CONTENT'),
+    ('a.docx', b'not zip', 400, 'INVALID_FILE_CONTENT'),
+])
+def test_invalid_uploads(client, name, content, status, code):
+    response = upload(client, content, name=name)
+    assert response.status_code == status
+    assert response.json()['error_code'] == code
+    assert client.app.state.store.list_documents('alice') == []
 
-    response = client.post(
-        "/upload",
-        files=[("files", ("sample.csv", b"a,b,c", "text/csv"))],
-    )
 
+def test_upload_batch_validation_and_size_limit(client, monkeypatch):
+    response = client.post('/upload', files=[('files', ('a.txt', b'hello', 'text/plain')),
+                                            ('files', ('b.pdf', b'invalid', 'application/pdf'))])
     assert response.status_code == 400
-    payload = response.json()
-    assert payload["success"] is False
-    assert payload["error_code"] == "INVALID_FILE_TYPE"
-
-
-def test_upload_endpoint_processes_all_files_and_keeps_binary_contents():
-    app = create_app()
-    client = TestClient(app)
-
-    response = client.post(
-        "/upload",
-        files=[
-            ("files", ("sample.txt", b"hello", "text/plain")),
-            ("files", ("sample.pdf", b"%PDF-1.7 binary payload", "application/pdf")),
-        ],
-    )
-
-    assert response.status_code == 200
-    uploads = response.json()
-    assert [upload["filename"] for upload in uploads] == ["sample.txt", "sample.pdf"]
-    assert uploads[1]["chunk_count"] == 0
-    assert app.state.store.get_document_content(uploads[1]["document_id"]) == b"%PDF-1.7 binary payload"
-
-
-def test_upload_endpoint_rejects_invalid_batch_without_storing_partial_results():
-    app = create_app()
-    client = TestClient(app)
-
-    response = client.post(
-        "/upload",
-        files=[
-            ("files", ("valid.txt", b"hello", "text/plain")),
-            ("files", ("invalid.pdf", b"not a PDF", "application/pdf")),
-        ],
-    )
-
-    assert response.status_code == 400
-    assert response.json()["error_code"] == "INVALID_FILE_CONTENT"
-    assert app.state.store.list_documents() == []
-
-
-def test_upload_endpoint_rejects_oversized_file_before_reading_it_all(monkeypatch):
+    assert client.app.state.store.list_documents('alice') == []
     from app.services.ingest_service import IngestService
 
     monkeypatch.setattr(IngestService, "MAX_FILE_SIZE_BYTES", 4)
