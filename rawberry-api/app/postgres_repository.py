@@ -39,30 +39,6 @@ class PostgresRepository:
             if row is None:
                 raise StorageError("Required database migration is missing")
 
-    def add(self, user_id: str, item: dict[str, Any]) -> None:
-        from psycopg.types.json import Jsonb
-
-        with self._connection() as connection:
-            connection.execute(
-                "INSERT INTO ingested_item(public_id, user_id, content, metadata) VALUES (%s, %s, %s, %s)",
-                (item['id'], user_id, item['text'], Jsonb(item.get('metadata', {}))),
-            )
-
-    def list_items(self, user_id: str) -> list[dict[str, Any]]:
-        with self._connection() as connection:
-            return connection.execute(
-                "SELECT public_id::text AS id, content AS text, metadata FROM ingested_item WHERE user_id = %s ORDER BY sequence_id", (user_id,)
-            ).fetchall()
-
-    def recent_items(self, user_id: str, count: int = 3) -> list[dict[str, Any]]:
-        if count <= 0:
-            return []
-        with self._connection() as connection:
-            rows = connection.execute(
-                "SELECT public_id::text AS id, content AS text, metadata FROM ingested_item "
-                "WHERE user_id = %s ORDER BY sequence_id DESC LIMIT %s", (user_id, count),
-            ).fetchall()
-            return list(reversed(rows))
 
     def save_documents(self, user_id: str, documents: list[tuple[dict[str, Any], bytes, list[dict[str, Any]]]]) -> None:
         from psycopg.types.json import Jsonb

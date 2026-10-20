@@ -10,12 +10,12 @@ from app.models import DocumentChunk, DocumentRecord, IngestRequest, IngestRespo
 from app.repository import Repository
 
 # Extraction and embedding generation remain the database/RAG team's next stage.
-class IngestService:
+class DocumentService:
     MAX_FILE_SIZE_BYTES = 25 * 1024 * 1024
     ALLOWED_EXTENSIONS = {".pdf": "application/pdf", ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document", ".txt": "text/plain"}
 
     def __init__(self, store: Repository) -> None:
-        # Store the location where ingested items will be saved.
+        # Store uploaded files and their extracted chunks through the repository.
         self.store = store
         self.embedding_provider = HashEmbeddingProvider()
 

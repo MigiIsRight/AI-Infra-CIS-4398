@@ -26,28 +26,17 @@ class InMemoryStore:
         self.retrieval_repository = InMemoryRetrievalRepository()
         self._next_chunk_id = 1
 
-    def add(self, item: dict[str, Any], owner_id: str | None = None) -> None:
-        # Add one item to the collection.
-        self._items.append(item)
-        self._item_owners[str(item["id"])] = owner_id
+    def add(self, user_id: str, item: dict[str, Any]) -> None:
+        with self._lock:
+            self._items.append({**deepcopy(item), 'user_id': user_id})
 
-    def add_document(self, document: dict[str, Any], content: bytes) -> None:
-        self._documents.append(document)
-        self._document_contents[str(document["id"])] = content
+    def list_items(self, user_id: str) -> list[dict[str, Any]]:
+        with self._lock:
+            return [{k: deepcopy(v) for k, v in item.items() if k != 'user_id'}
+                    for item in self._items if item.get('user_id') == user_id]
 
-    def add_chunk(self, chunk: dict[str, Any], embedding: list[float]) -> None:
-        stored_chunk = dict(chunk)
-        chunk_id = self._next_chunk_id
-        self._next_chunk_id += 1
-        stored_chunk["id"] = chunk_id
-        self._chunks.append(stored_chunk)
-        self.retrieval_repository.upsert(
-            chunk_id=chunk_id,
-            document_id=str(chunk["document_id"]),
-            content=str(chunk["text"]),
-            embedding=embedding,
-            owner_id=chunk.get("owner_id"),
-        )
+    def recent_items(self, user_id: str, count: int = 3) -> list[dict[str, Any]]:
+        return self.list_items(user_id)[-count:] if count > 0 else []
 
     def save_documents(self, documents: list[tuple[dict[str, Any], bytes, list[dict[str, Any]]]]) -> None:
         for document, content, chunks in documents:

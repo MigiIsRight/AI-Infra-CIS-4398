@@ -3,6 +3,9 @@
 RAWBerry provides backend API endpoints for document ingestion, chunking, RAG
 retrieval, and AI model integration.
 
+Documents enter RAG through `POST /upload`; pasted-text `/ingest` is not supported.
+Chat questions and answers are stored separately as conversation history.
+
 Authentication, login, registration, and account management belong to the upstream
 application. This backend is responsible for user-scoped storage and retrieval
 using trusted user context supplied by that application's backend or gateway.

@@ -24,8 +24,8 @@ access to RAWBerry. This backend does not provide login, registration, password
 storage, or account sessions. Local Swagger testing lets you manually enter an ID;
 that is a development convenience, not proof of identity.
 
-RAWBerry uses this user context to scope documents, ingested text, preferences,
-retrieved chunks, recent items, and conversations. Another user's conversation
+RAWBerry uses this user context to scope documents, preferences,
+retrieved chunks and conversations. Another user's conversation
 returns the same 404 as a nonexistent conversation. Anonymous uploads and sharing
 are not supported. `/` and `/health` do not require user context.
 
@@ -94,8 +94,6 @@ selection is not implemented.
 | --- | --- |
 | `GET /` | Status and endpoint listing; no user header required |
 | `GET /health` | Process liveness; no user header required |
-| `POST /ingest` | Store JSON text/metadata for the current user |
-| `GET /get` | List only the current user's ingested items and count |
 | `POST /upload` | Upload multipart `files`; ownership comes from the header |
 | `GET /documents` | List only the current user's uploaded document metadata |
 | `GET /me/system-prompt` | Read the current user's preferences |
@@ -105,12 +103,6 @@ selection is not implemented.
 | `GET /conversations/{conversation_id}/messages` | Read owned conversation history |
 | `POST /chat` | Generate and store a turn in an owned conversation |
 | `POST /chat/stream` | Same chat behavior with SSE lifecycle events |
-
-Plain-text ingestion body:
-
-```json
-{"text": "Research notes", "metadata": {"source": "demo"}}
-```
 
 Create a conversation with `POST /conversations`:
 
@@ -127,8 +119,23 @@ Use its returned `id` as `conversation_id` in either chat endpoint:
 }
 ```
 
-The response includes `conversation_id`, `turn_id`, `reply`, and owner-scoped
-`recent_items`. Update preferences with `{"prompt": "Keep answers concise."}`.
+The response includes `conversation_id`, `turn_id`, and `reply`. Update preferences
+with `{"prompt": "Keep answers concise."}`.
+
+## Document-only RAG input
+
+Use `POST /upload` to submit one or more document files, and `GET /documents` to
+list your uploaded document metadata. TXT files produce searchable chunks now;
+PDF/DOCX extraction is still pending. Uploaded content is scoped to `X-User-ID`.
+
+`POST /ingest` and `GET /get` have been removed and return 404. Chat responses no
+longer include `recent_items`. Existing pasted-text database rows are retained as
+legacy data but are not exposed, searched, or supplied to the model. No destructive
+database migration is needed for this API change.
+
+A user's chat questions and assistant replies are recorded through `/chat` or
+`/chat/stream` in the selected conversation. They are conversation history, not
+uploaded source documents.
 
 ## Conversation behavior
 

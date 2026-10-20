@@ -243,6 +243,7 @@ def test_chat_route_uses_configured_gemini_client(monkeypatch):
     assert [e['status'] for e in events] == ['received', 'generating', 'completed']
     assert len({e['request_id'] for e in events}) == 1
     assert events[-1]['response']['reply'] == 'You said: hello'
+    assert set(events[-1]['response']) == {'conversation_id', 'turn_id', 'reply'}
     assert len(client.get('/conversations/' + identifier + '/messages').json()) == 2
 
 
