@@ -14,7 +14,8 @@ retrieval, preferences, and persistent conversation histories are scoped to that
 The header itself is not authentication; upstream must prevent identity spoofing.
 
 See the [API README](rawberry-api/README.md#authentication-boundary-and-user-context)
-for the responsibility boundary and current limitations, and
-[persistence setup](rawberry-api/PERSISTENCE.md) for storage configuration.
+for the responsibility boundary and current limitations, the
+[database README](rawberry-db/README.MD) for schema setup, and
+[run instructions](rawberry-api/run.md) for local Google Cloud configuration.
 ## Requirements
 - Python 3.12+
