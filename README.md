@@ -11,3 +11,5 @@ Current user-ID fields do not yet enforce complete user isolation.
 See the [API README](rawberry-api/README.md#authentication-boundary-and-user-context)
 for the responsibility boundary and current limitations, and
 [persistence setup](rawberry-api/PERSISTENCE.md) for storage configuration.
+## Requirements
+- Python 3.12+

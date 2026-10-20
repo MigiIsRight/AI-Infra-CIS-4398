@@ -5,6 +5,7 @@ from uuid import uuid4
 
 from fastapi import HTTPException, UploadFile, status
 
+from app.retrieval.embeddings import HashEmbeddingProvider
 from app.models import DocumentChunk, DocumentRecord, IngestRequest, IngestResponse, ItemRecord, UploadResponse
 from app.repository import Repository
 
@@ -16,8 +17,17 @@ class IngestService:
     def __init__(self, store: Repository) -> None:
         # Store the location where ingested items will be saved.
         self.store = store
+        self.embedding_provider = HashEmbeddingProvider()
 
-    # Plain text ingestion remains separate from the uploaded-document chunk pipeline.
+    def _save_chunks(self, chunks: list[DocumentChunk]) -> None:
+        for chunk in chunks:
+            chunk.status = "indexed"
+            self.store.add_chunk(
+                chunk.model_dump(),
+                self.embedding_provider.embed_document(chunk.text),
+            )
+
+    # Store text as both a legacy item and a searchable document.
     def ingest(self, request: IngestRequest) -> IngestResponse:
         # Create, save, and return an item from the submitted text.
         item = ItemRecord(
@@ -26,7 +36,22 @@ class IngestService:
             metadata=request.metadata or {},
         )
 
-        self.store.add({**item.model_dump(), "user_id": request.userid})
+        self.store.add(item.model_dump(), owner_id=str(request.userid))
+
+        document_id = item.id
+        chunks = self._chunk_text(document_id, str(request.userid), request.text)
+        document = DocumentRecord(
+            id=document_id,
+            filename=str((request.metadata or {}).get("filename", "text-ingest.txt")),
+            file_type=".txt",
+            size_bytes=len(request.text.encode("utf-8")),
+            owner_id=str(request.userid),
+            chunk_count=len(chunks),
+            embedding_status="completed",
+            metadata=request.metadata or {},
+        )
+        self.store.add_document(document.model_dump(), content=request.text.encode("utf-8"))
+        self._save_chunks(chunks)
 
         return IngestResponse(
             message="Item ingested successfully",
@@ -135,7 +160,11 @@ class IngestService:
                 metadata={"source": "upload_endpoint"},
             )
 
-            documents.append((document.model_dump(), raw_bytes, [chunk.model_dump() for chunk in chunks]))
+            if text is not None:
+                document.embedding_status = "completed"
+
+            self.store.add_document(document.model_dump(), content=raw_bytes)
+            self._save_chunks(chunks)
 
             responses.append(
                 UploadResponse(
@@ -144,8 +173,12 @@ class IngestService:
                     filename=document.filename,
                     status="uploaded",
                     chunk_count=len(chunks),
-                    message="Document uploaded successfully; processing is pending.",
-                    embedding_status="pending",
+                    message=(
+                        "Document uploaded and indexed successfully."
+                        if text is not None
+                        else "Document uploaded successfully; text extraction is pending."
+                    ),
+                    embedding_status=document.embedding_status,
                 )
             )
 
