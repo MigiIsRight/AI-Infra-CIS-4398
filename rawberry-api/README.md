@@ -1,7 +1,15 @@
 # RAWBerry API
 
-FastAPI backend for document ingestion, chunking, RAG retrieval, and Gemini calls.
-Authentication and account management belong to the upstream application.
+Database integration setup and current persistence behavior are documented in
+[PERSISTENCE.md](PERSISTENCE.md). PostgreSQL is selected using `DATABASE_URL`;
+without it, storage remains in memory. The starter-design notes below describe
+the original prototype and planned architecture.
+
+This folder contains the FastAPI backend for the RAWBerry project.
+
+## Purpose
+
+The `rawberry-api` folder is the API layer for the application. It provides a testable backend contract and a local in-memory retrieval implementation while the persistent database/RAG pipeline is being developed.
 
 ## Authentication boundary and user context
 
@@ -23,17 +31,40 @@ are not supported. `/` and `/health` do not require user context.
 
 ## Current implementation
 
-- Configurable PostgreSQL persistence; isolated in-memory mode without `DATABASE_URL`.
-- Multi-file uploads: PDF, DOCX, and UTF-8 TXT; 25 MiB per-file limit.
-- TXT chunking and owner-filtered keyword retrieval.
-- Optional Vertex AI Gemini generation, or mock responses for local development.
-- Per-user response preferences.
-- Independent conversations with ordered user/assistant history and generation states.
-- SSE chat lifecycle events; generated tokens are not streamed individually.
+This backend uses in-memory storage. Text ingestion and `.txt` uploads are chunked, embedded with a deterministic local feature-hash provider, and searched by cosine similarity. Chat passes the top matching chunks to the configured LLM client. This local provider supports development and interface testing; it is not a hosted semantic embedding model.
 
-PDF/DOCX text extraction, embeddings, semantic search, citations, and sharing remain
-future work. Documents enter the RAG pipeline only through `/upload`; pasted-text
-submission is not supported. Chat messages remain part of conversation history.
+### Available endpoints
+
+- `GET /` — returns the API status and available routes
+- `GET /health` — health check
+- `GET /get` — returns ingested items
+- `POST /chat` — accepts a chat message and returns a simple reply
+- `POST /chat/stream` — streams chat lifecycle status and the final reply as Server-Sent Events
+- `POST /ingest` — stores text and optional metadata
+
+## Current responsibilities of this folder
+
+- FastAPI application setup
+- Request/response modeling
+- API route definitions
+- Basic validation
+- In-memory data handling and vector retrieval for local development
+
+## Out of scope for this folder
+
+This folder does not yet provide:
+
+- PostgreSQL or pgvector setup
+- persistent storage
+- upstream authentication, login, registration, and account management
+
+User-scoped storage and retrieval remain backend responsibilities, as described
+above; they are separate from upstream authentication.
+
+## Folder contents
+
+- `app/main.py` — FastAPI application
+- `requirements.txt` — Python dependencies
 
 ## Run locally
 

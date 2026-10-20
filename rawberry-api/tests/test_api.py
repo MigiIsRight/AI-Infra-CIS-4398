@@ -9,139 +9,235 @@ from fastapi.testclient import TestClient
 from app.api.routes import get_chat_service
 from app.config import Settings
 from app.main import create_app
-from app.repository import ConversationBusy, ResourceNotFound
-from app.services.chat_service import ChatService
-from app.store import InMemoryStore
 
 
-@pytest.fixture
-def client():
-    with TestClient(create_app(store=InMemoryStore()), headers={'X-User-ID': 'alice'}) as client:
-        yield client
+def test_create_app_uses_isolated_storage():
+    first_app = create_app()
+    second_app = create_app()
+
+    first_store = first_app.state.store
+    second_store = second_app.state.store
+
+    assert first_store is not second_store
+
+    first_store.add({"id": "one", "text": "alpha", "metadata": {}})
+    assert len(first_store.list_items()) == 1
+    assert len(second_store.list_items()) == 0
 
 
-def conversation(client, user='alice'):
-    response = client.post('/conversations', headers={'X-User-ID': user}, json={'title': 'Research'})
-    assert response.status_code == 201
-    return response.json()['id']
+def test_root_has_typed_contract():
+    app = create_app()
+    client = TestClient(app)
+    response = client.get("/")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["message"] == "RAWBerry API is running"
+    assert "/health" in payload["available_endpoints"]
 
 
-def ask(client, identifier, message='hello', user='alice', stream=False):
-    return client.post('/chat/stream' if stream else '/chat', headers={'X-User-ID': user},
-                       json={'conversation_id': identifier, 'message': message})
+def test_health_endpoint():
+    app = create_app()
+    client = TestClient(app)
+    response = client.get("/health")
+    assert response.status_code == 200
+    assert response.json() == {"status": "healthy"}
 
 
-def upload(client, text=b'alpha gamma alice secret', user='alice', name='notes.txt'):
-    return client.post('/upload', headers={'X-User-ID': user}, files=[('files', (name, text, 'text/plain'))])
+def test_ingest_and_get_round_trip():
+    app = create_app()
+    client = TestClient(app)
+
+    ingest_response = client.post(
+        "/ingest",
+        json={"userid": 1, "text": "hello world", "metadata": {"source": "demo"}},
+    )
+
+    assert ingest_response.status_code == 201
+    payload = ingest_response.json()
+    assert payload["message"] == "Item ingested successfully"
+    assert payload["item"]["text"] == "hello world"
+    assert payload["count"] == 1
+
+    get_response = client.get("/get")
+    assert get_response.status_code == 200
+    assert get_response.json()["count"] == 1
+    assert len(app.state.store.list_chunks()) == 1
+    assert app.state.store.list_chunks()[0]["status"] == "indexed"
 
 
-def test_public_endpoints_and_isolated_storage():
-    a, b = create_app(store=InMemoryStore()), create_app(store=InMemoryStore())
-    a.state.store.set_system_prompt('alice', 'Concise')
-    assert a.state.store.get_system_prompt('alice') == 'Concise'
-    assert b.state.store.get_system_prompt('alice') == ''
-    with TestClient(a) as client:
-        assert client.get('/health').json() == {'status': 'healthy'}
-        root = client.get('/').json()
-        assert root['message'] == 'RAWBerry API is running'
-        assert '/conversations' in root['available_endpoints']
+def test_chat_uses_typed_reply(monkeypatch):
+    monkeypatch.setenv("USE_MOCK_CHAT", "true")
+    monkeypatch.delenv("GOOGLE_CLOUD_PROJECT", raising=False)
+    monkeypatch.delenv("GCLOUD_PROJECT", raising=False)
+    monkeypatch.delenv("GOOGLE_CLOUD_PROJECT_ID", raising=False)
+
+    app = create_app()
+    client = TestClient(app)
+    client.post(
+        "/ingest",
+        json={"userid": 1, "text": "first item"},
+    )
+
+    response = client.post(
+        "/chat",
+        json={
+            "userid": 1,
+            "data": {"window": 3, "agent": "test"},
+            "message": "hello",
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["reply"] == "You said: hello"
+    assert len(payload["recent_items"]) == 1
 
 
-@pytest.mark.parametrize('method,path,body', [
-    ('get', '/documents', None), ('get', '/conversations', None),
-    ('get', '/me/system-prompt', None), ('put', '/me/system-prompt', {'prompt': 'hi'}),
-    ('post', '/conversations', {}),
-    ('post', '/chat', {'conversation_id': str(uuid4()), 'message': 'hi'}),
-    ('post', '/chat/stream', {'conversation_id': str(uuid4()), 'message': 'hi'}),
-    ('get', '/conversations/' + str(uuid4()) + '/messages', None),
-])
-def test_every_data_route_requires_user_context(method, path, body):
-    with TestClient(create_app(store=InMemoryStore())) as client:
-        assert client.request(method, path, json=body).status_code == 422
+def test_chat_stream_emits_lifecycle_status_and_final_response(monkeypatch):
+    monkeypatch.setenv("USE_MOCK_CHAT", "true")
+    app = create_app()
+    client = TestClient(app)
+
+    with client.stream(
+        "POST",
+        "/chat/stream",
+        json={
+            "userid": 1,
+            "data": {"window": 3, "agent": "test"},
+            "message": "hello",
+        },
+    ) as response:
+        body = "".join(response.iter_text())
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert body.index('"status":"received"') < body.index('"status":"generating"')
+    assert body.index('"status":"generating"') < body.index('"status":"completed"')
+    assert '"reply":"You said: hello"' in body
 
 
-def test_upload_requires_user_context():
-    with TestClient(create_app(store=InMemoryStore())) as client:
-        assert client.post('/upload', files=[('files', ('a.txt', b'hello', 'text/plain'))]).status_code == 422
+def test_chat_stream_emits_failure_status_without_exposing_exception():
+    from app.api.routes import get_chat_service
+
+    class FailingChatService:
+        def generate_reply(self, request):
+            raise RuntimeError("private provider detail")
+
+    app = create_app()
+    app.dependency_overrides[get_chat_service] = lambda: FailingChatService()
+    client = TestClient(app)
+
+    response = client.post(
+        "/chat/stream",
+        json={
+            "userid": 1,
+            "data": {"window": 3, "agent": "test"},
+            "message": "hello",
+        },
+    )
+
+    assert response.status_code == 200
+    assert '"status":"failed"' in response.text
+    assert "The response could not be generated." in response.text
+    assert "private provider detail" not in response.text
 
 
-@pytest.mark.parametrize('identifier', ['', ' ', ' alice', 'alice ', 'a b', 'a' * 129])
-def test_invalid_user_context_rejected(client, identifier):
-    assert client.get('/documents', headers={'X-User-ID': identifier}).status_code == 422
+def test_system_prompt_can_be_read_updated_and_cleared():
+    client = TestClient(create_app())
+
+    initial = client.get("/users/42/system-prompt")
+    assert initial.status_code == 200
+    assert initial.json() == {"userid": 42, "prompt": ""}
+
+    updated = client.put("/users/42/system-prompt", json={"prompt": "Be concise."})
+    assert updated.status_code == 200
+    assert updated.json() == {"userid": 42, "prompt": "Be concise."}
+    assert client.get("/users/43/system-prompt").json()["prompt"] == ""
+
+    cleared = client.put("/users/42/system-prompt", json={"prompt": ""})
+    assert cleared.status_code == 200
+    assert cleared.json()["prompt"] == ""
 
 
-def test_duplicate_identity_rejected():
-    with TestClient(create_app(store=InMemoryStore())) as client:
-        assert client.get('/documents', headers=[('X-User-ID', 'alice'), ('X-User-ID', 'bob')]).status_code == 422
+def test_system_prompt_rejects_values_over_limit():
+    client = TestClient(create_app())
+
+    response = client.put("/users/42/system-prompt", json={"prompt": "x" * 2001})
+
+    assert response.status_code == 422
 
 
-def test_identity_is_case_sensitive_and_not_numeric(client):
-    for user in ['42', '042', 'Alice', 'alice']:
-        assert upload(client, text=user.encode(), user=user).status_code == 200
-    for user in ['42', '042', 'Alice', 'alice']:
-        documents = client.get('/documents', headers={'X-User-ID': user}).json()
-        assert len(documents) == 1
-        assert documents[0]['user_id'] == user
-        assert client.app.state.store.get_document_content(user, documents[0]['id']) == user.encode()
+def test_chat_includes_saved_user_system_prompt():
+    client = TestClient(create_app())
+    client.put("/users/42/system-prompt", json={"prompt": "Be concise."})
+
+    response = client.post(
+        "/chat",
+        json={
+            "userid": 42,
+            "data": {"window": 3, "agent": "test"},
+            "message": "Explain this.",
+        },
+    )
+
+    assert response.status_code == 200
+    assert "Be concise." in response.json()["reply"]
+    assert "Explain this." in response.json()["reply"]
 
 
-
-def test_removed_identity_fields_and_old_contract_rejected(client):
-    assert client.post('/chat', json={'userid': 42, 'data': {'window': 1, 'agent': 'test'}, 'message': 'hello'}).status_code == 422
-    assert client.post('/upload', files=[('files', ('a.txt', b'hello', 'text/plain'))], data={'owner_id': 'bob'}).status_code == 422
-    assert client.put('/me/system-prompt', json={'prompt': 'hello', 'user_id': 'bob'}).status_code == 422
-    assert client.get('/users/bob/system-prompt').status_code == 404
-    assert client.get('/documents?user_id=bob').status_code == 422
-
-
-def exercise_isolation(store):
-    app = create_app(store=store)
-    captured = []
-    class CapturingLLM:
-        def generate_reply(self, message):
-            captured.append(message)
-            return 'answer-' + str(len(captured))
-    app.dependency_overrides[get_chat_service] = lambda: ChatService(store, llm_client=CapturingLLM())
-    with TestClient(app, headers={'X-User-ID': 'alice'}) as client:
-        for user in ['alice', 'bob']:
-            assert client.put('/me/system-prompt', headers={'X-User-ID': user}, json={'prompt': user + '-preference'}).status_code == 200
-            assert upload(client, text=('gamma ' + user + '-document').encode(), user=user).status_code == 200
-        first, second, other = conversation(client), conversation(client), conversation(client, 'bob')
-        assert len(client.get('/conversations').json()) == 2
-        assert len(client.get('/documents').json()) == 1
-        assert client.get('/me/system-prompt').json() == {'user_id': 'alice', 'prompt': 'alice-preference'}
-        assert client.get('/conversations/' + other + '/messages').status_code == 404
-        assert ask(client, other).status_code == 404
-        assert ask(client, other, stream=True).status_code == 404
-        assert ask(client, str(uuid4())).status_code == 404
-        first_reply = ask(client, first, 'gamma first-conversation-only')
-        assert first_reply.status_code == 200
-        assert 'recent_items' not in first_reply.json()
-        assert 'alice-document' in captured[-1] and 'bob-document' not in captured[-1]
-        assert 'alice-preference' in captured[-1] and 'bob-preference' not in captured[-1]
-        assert ask(client, first, 'follow-up').status_code == 200
-        assert 'first-conversation-only' in captured[-1] and 'answer-1' in captured[-1]
-        assert ask(client, second, 'gamma separate').status_code == 200
-        assert 'first-conversation-only' not in captured[-1]
-        assert 'alice-document' in captured[-1]  # all of this user's documents are available in every chat
-        assert ask(client, other, 'gamma', user='bob').status_code == 200
-        assert 'bob-document' in captured[-1] and 'alice-document' not in captured[-1]
-        history = client.get('/conversations/' + first + '/messages').json()
-        assert [m['role'] for m in history] == ['user', 'assistant', 'user', 'assistant']
-        assert [m['content'] for m in history] == ['gamma first-conversation-only', 'answer-1', 'follow-up', 'answer-2']
-        assert all(m['status'] == 'completed' for m in history)
-        alice_document = store.list_documents('alice')[0]['id']
-        with pytest.raises(ResourceNotFound):
-            store.get_document_content('bob', alice_document)
+def test_invalid_message_is_rejected():
+    app = create_app()
+    client = TestClient(app)
+    response = client.post(
+        "/chat",
+        json={
+            "userid": 1,
+            "data": {"window": 3, "agent": "test"},
+            "message": "",
+        },
+    )
+    assert response.status_code == 422
 
 
-def test_users_and_conversations_are_isolated():
-    exercise_isolation(InMemoryStore())
+def test_chat_route_uses_mock_fallback_when_disabled(monkeypatch):
+    monkeypatch.setenv("USE_MOCK_CHAT", "true")
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_CLOUD_PROJECT", raising=False)
+    app = create_app()
+    client = TestClient(app)
+
+    response = client.post(
+        "/chat",
+        json={
+            "userid": 1,
+            "data": {"window": 3, "agent": "test"},
+            "message": "fallback check",
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["reply"] == "You said: fallback check"
 
 
-def test_stream_events_and_persisted_history(client):
-    identifier = conversation(client)
-    response = ask(client, identifier, stream=True)
+def test_chat_route_uses_configured_gemini_client(monkeypatch):
+    monkeypatch.setenv("USE_MOCK_CHAT", "false")
+    monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "demo-project")
+
+    from app.services import chat_service as chat_service_module
+
+    fake_llm = MagicMock()
+    fake_llm.generate_reply.return_value = "gemini reply"
+    monkeypatch.setattr(chat_service_module, "GeminiChatClient", MagicMock(return_value=fake_llm))
+
+    app = create_app()
+    client = TestClient(app)
+
+    response = client.post(
+        "/chat",
+        json={
+            "userid": 1,
+            "data": {"window": 3, "agent": "test"},
+            "message": "hello",
+        },
+    )
     assert response.status_code == 200
     events = [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith('data: ')]
     assert [e['status'] for e in events] == ['received', 'generating', 'completed']
@@ -229,72 +325,81 @@ def test_upload_batch_validation_and_size_limit(client, monkeypatch):
                                             ('files', ('b.pdf', b'invalid', 'application/pdf'))])
     assert response.status_code == 400
     assert client.app.state.store.list_documents('alice') == []
-    from app.services.document_service import DocumentService
-    monkeypatch.setattr(DocumentService, 'MAX_FILE_SIZE_BYTES', 4)
-    assert upload(client, b'12345').status_code == 413
-    assert client.app.state.store.list_documents('alice') == []
+    from app.services.ingest_service import IngestService
+
+    monkeypatch.setattr(IngestService, "MAX_FILE_SIZE_BYTES", 4)
+    app = create_app()
+    client = TestClient(app)
+
+    response = client.post(
+        "/upload",
+        files=[("files", ("large.txt", b"12345", "text/plain"))],
+    )
+
+    assert response.status_code == 413
+    assert response.json()["error_code"] == "FILE_TOO_LARGE"
+    assert app.state.store.list_documents() == []
 
 
-def test_chat_uses_configured_gemini_client(monkeypatch, client):
-    monkeypatch.setenv('USE_MOCK_CHAT', 'false')
-    monkeypatch.setenv('GOOGLE_CLOUD_PROJECT', 'demo-project')
-    from app.services import chat_service
-    llm = MagicMock()
-    llm.generate_reply.return_value = 'gemini reply'
-    monkeypatch.setattr(chat_service, 'GeminiChatClient', MagicMock(return_value=llm))
-    assert ask(client, conversation(client)).json()['reply'] == 'gemini reply'
+def test_upload_endpoint_rejects_non_utf8_text():
+    app = create_app()
+    client = TestClient(app)
+
+    response = client.post(
+        "/upload",
+        files=[("files", ("invalid.txt", b"\xff\xfe", "text/plain"))],
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error_code"] == "INVALID_TEXT_ENCODING"
 
 
-def test_model_history_is_bounded_and_excludes_failed_turns():
-    store = InMemoryStore()
-    identifier = store.create_conversation('alice', 'Bounded')['id']
-    for index in range(12):
-        turn = store.start_turn('alice', identifier, f'prior-question-{index}')
-        store.finish_turn('alice', identifier, turn['id'], f'prior-answer-{index}')
-    failed = store.start_turn('alice', identifier, 'failed-secret')
-    store.finish_turn('alice', identifier, failed['id'], None)
-    llm = MagicMock()
-    llm.generate_reply.return_value = 'answer'
-    from app.user_models import ChatRequest
-    ChatService(store, llm_client=llm).generate_reply(
-        'alice', ChatRequest(conversation_id=identifier, message='current-question'))
-    prompt = llm.generate_reply.call_args.args[0]
-    assert 'prior-question-0"' not in prompt and 'prior-question-1"' not in prompt
-    assert 'prior-question-2' in prompt and 'prior-question-11' in prompt
-    assert 'failed-secret' not in prompt
-    large = store.start_turn('alice', identifier, 'x' * 15000)
-    store.finish_turn('alice', identifier, large['id'], 'large answer')
-    ChatService(store, llm_client=llm).generate_reply(
-        'alice', ChatRequest(conversation_id=identifier, message='new current'))
-    assert len(llm.generate_reply.call_args.args[0]) < 12000
+def test_chat_uses_retrieved_document_chunks_as_context():
+    app = create_app()
+    client = TestClient(app)
 
+    upload = client.post(
+        "/upload",
+        files=[("files", ("sample.txt", b"alpha beta gamma delta", "text/plain"))],
+        data={"owner_id": "user-123"},
+    )
+    assert upload.status_code == 200
 
-def test_document_upload_is_the_only_source_entry_point(client):
-    schema = client.app.openapi()
-    assert '/ingest' not in schema['paths'] and '/get' not in schema['paths']
-    assert 'IngestRequest' not in schema['components']['schemas']
-    assert client.post('/ingest', json={'text': 'private'}).status_code == 404
-    assert client.get('/get').status_code == 404
-    advertised = client.get('/').json()['available_endpoints']
-    assert '/ingest' not in advertised and '/get' not in advertised
-    assert '/upload' in advertised
-    assert upload(client, b'gamma uploaded document').status_code == 200
-    identifier = conversation(client)
-    response = ask(client, identifier, 'gamma')
+    response = client.post(
+        "/chat",
+        json={
+            "userid": 1,
+            "data": {"window": 3, "agent": "test"},
+            "message": "What is gamma?",
+        },
+    )
+
     assert response.status_code == 200
-    assert 'gamma uploaded document' in response.json()['reply']
-    assert set(response.json()) == {'conversation_id', 'turn_id', 'reply'}
-    history = client.get('/conversations/' + identifier + '/messages').json()
-    assert len(history) == 2
+    payload = response.json()
+    assert "gamma" in payload["reply"].lower()
+    assert "alpha beta gamma delta" in payload["reply"].lower()
 
 
+def test_chat_combines_retrieved_context_and_saved_response_preferences():
+    app = create_app()
+    client = TestClient(app)
+    client.put("/users/7/system-prompt", json={"prompt": "Answer in one sentence."})
+    client.post(
+        "/ingest",
+        json={"userid": 7, "text": "The moon orbits Earth every 27 days."},
+    )
 
-def test_openapi_exposes_header_on_every_data_endpoint(client):
-    schema = client.app.openapi()
-    for path, operations in schema['paths'].items():
-        for operation in operations.values():
-            if path in ('/', '/health'):
-                continue
-            headers = [p for p in operation.get('parameters', []) if p['in'] == 'header']
-            assert len(headers) == 1
-            assert headers[0]['name'] == 'X-User-ID' and headers[0]['required'] is True
+    response = client.post(
+        "/chat",
+        json={
+            "userid": 7,
+            "data": {"window": 3, "agent": "test"},
+            "message": "How long does the moon orbit Earth?",
+        },
+    )
+
+    assert response.status_code == 200
+    reply = response.json()["reply"]
+    assert "Answer in one sentence." in reply
+    assert "The moon orbits Earth every 27 days." in reply
+    assert "How long does the moon orbit Earth?" in reply
