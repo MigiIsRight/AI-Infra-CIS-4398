@@ -3,13 +3,13 @@ from app.models import ChatRequest, ChatResponse, ItemRecord
 from app.retrieval.embeddings import HashEmbeddingProvider
 from app.retrieval.service import RetrievalService
 from app.services.gemini_service import GeminiChatClient, MockChatClient
-from app.store import InMemoryStore
+from app.repository import Repository
 
 
 class ChatService:
     def __init__(
         self,
-        store: InMemoryStore,
+        store: Repository,
         settings: Settings | None = None,
         llm_client=None,
     ) -> None:

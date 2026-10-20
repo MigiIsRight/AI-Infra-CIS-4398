@@ -40,6 +40,11 @@ class InMemoryStore:
             owner_id=chunk.get("owner_id"),
         )
 
+    def save_documents(self, documents: list[tuple[dict[str, Any], bytes, list[dict[str, Any]]]]) -> None:
+        for document, content, chunks in documents:
+            self.add_document(document, content)
+            self._chunks.extend(chunks)
+
     def list_items(self) -> list[dict[str, Any]]:
         # Return all stored items as a new list.
         return list(self._items)
