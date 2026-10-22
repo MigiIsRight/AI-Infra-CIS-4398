@@ -14,14 +14,17 @@ from fastapi.testclient import TestClient
 from app.main import create_app
 from app.postgres_repository import PostgresRepository
 from app.repository import ConversationBusy, ResourceNotFound, StorageError
+from app.retrieval.embeddings import HashEmbeddingProvider
 from test_api import exercise_isolation
 
 
 @pytest.fixture
-def database_url():
+def database_url(monkeypatch):
     base_url = os.getenv("TEST_DATABASE_URL")
     if not base_url:
         pytest.skip("Set TEST_DATABASE_URL to a disposable PostgreSQL/pgvector database")
+    # Exercise real pgvector SQL without making paid Vertex AI requests.
+    monkeypatch.setattr('app.postgres_repository.VertexEmbeddingProvider', lambda: HashEmbeddingProvider(768))
     import psycopg
     from psycopg import sql
     from psycopg.conninfo import make_conninfo
@@ -53,6 +56,9 @@ def database_url():
             scoped_migration = (root / "migrations/002_user_scoping_conversations.sql").read_text()
             connection.execute(scoped_migration)
             connection.execute(scoped_migration)
+            vector_migration = (root / 'migrations/003_vector_embeddings.sql').read_text()
+            connection.execute(vector_migration)
+            connection.execute(vector_migration)
         yield url
     finally:
         with psycopg.connect(base_url, autocommit=True) as admin:
@@ -68,6 +74,7 @@ def test_data_survives_application_recreation_and_is_shared(database_url, monkey
             ("files", ("paper.pdf", b"%PDF-1.7 example", "application/pdf")),
         ])
         assert uploaded.status_code == 200
+        assert [d['embedding_status'] for d in uploaded.json()] == ['completed', 'pending']
         assert first.put("/me/system-prompt", json={"prompt": "Be concise"}).status_code == 200
         with TestClient(create_app(), headers={'X-User-ID': 'alice'}) as second:
             assert len(second.get("/documents").json()) == 2
@@ -125,6 +132,64 @@ def test_invalid_api_batch_writes_nothing(database_url):
 
 def test_postgres_isolation_and_conversations(database_url):
     exercise_isolation(PostgresRepository(database_url))
+
+
+def test_pgvector_persists_ranks_and_filters_owners_and_models(database_url):
+    import psycopg
+    from app.retrieval.embeddings import EMBEDDING_MODEL
+
+    class Vectors:
+        def embed_document(self, text):
+            return {'exact': [1.0, 0.0], 'related': [0.8, 0.6], 'unrelated': [0.0, 1.0]}[text] + [0.0] * 766
+
+        def embed_query(self, text):
+            return self.embed_document('exact')
+
+    repository = PostgresRepository(database_url, embeddings=Vectors())
+    def save(owner, text):
+        document = {'id': str(uuid4()), 'filename': 'notes.txt', 'file_type': '.txt',
+                    'size_bytes': len(text), 'metadata': {}}
+        statuses = repository.save_documents(owner, [(document, text.encode(), [
+            {'chunk_index': 0, 'text': text, 'page_number': 4, 'status': 'pending'},
+        ])])
+        assert statuses == ['completed']
+        return document['id']
+
+    related = save('alice', 'related')
+    exact = save('alice', 'exact')
+    save('alice', 'unrelated')
+    save('bob', 'exact')
+    # A recreated repository reads the stored vectors, not regenerated document vectors.
+    restarted = PostgresRepository(database_url, embeddings=Vectors())
+    results = restarted.search_chunks('alice', 'question', limit=5)
+    assert [r['document_id'] for r in results] == [exact, related]
+    assert [r['similarity'] for r in results] == pytest.approx([1.0, 0.8])
+    assert results[0]['page_number'] == 4
+    assert len(restarted.search_chunks('alice', 'question', limit=1)) == 1
+    assert restarted.search_chunks('nobody', 'question') == []
+    assert restarted.search_chunks('alice', '  ') == []
+    assert restarted.search_chunks('alice', 'question', limit=0) == []
+
+    with psycopg.connect(database_url) as connection:
+        assert connection.execute('SELECT DISTINCT vector_dims(vector) FROM embedding').fetchall() == [(768,)]
+        connection.execute('UPDATE embedding SET vector = %s::vector WHERE chunk_id = '
+                           '(SELECT c.id FROM chunk c JOIN document d ON d.id = c.doc_id WHERE d.public_id::text = %s)',
+                           ('[1,0]', exact))
+        connection.execute('UPDATE embedding SET model = %s WHERE model = %s AND vector_dims(vector) = 768',
+                           ('another-model', EMBEDDING_MODEL))
+    assert restarted.search_chunks('alice', 'question') == []
+
+
+def test_embedding_failure_writes_no_documents(database_url):
+    class FailingEmbeddings:
+        def embed_document(self, text):
+            raise RuntimeError('private provider details')
+
+    repository = PostgresRepository(database_url, embeddings=FailingEmbeddings())
+    document = {'id': str(uuid4()), 'filename': 'notes.txt', 'file_type': '.txt', 'size_bytes': 5}
+    with pytest.raises(StorageError, match='Embedding generation failed'):
+        repository.save_documents('alice', [(document, b'alpha', [{'chunk_index': 0, 'text': 'alpha'}])])
+    assert repository.list_documents('alice') == []
 
 
 def test_legacy_ownership_is_quarantined(database_url):
