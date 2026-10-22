@@ -9,7 +9,7 @@ from app.models import UploadResponse
 from app.user_models import DocumentChunk, DocumentRecord
 from app.repository import Repository
 
-# Extraction and embedding generation remain the database/RAG team's next stage.
+# PDF and DOCX extraction remain pending; PostgreSQL indexes extracted text on save.
 class DocumentService:
     MAX_FILE_SIZE_BYTES = 25 * 1024 * 1024
     ALLOWED_EXTENSIONS = {".pdf": "application/pdf", ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document", ".txt": "text/plain"}
@@ -133,5 +133,10 @@ class DocumentService:
                 )
             )
 
-        self.store.save_documents(user_id, documents)
+        statuses = self.store.save_documents(user_id, documents)
+        # Report what storage actually indexed; accepted PDF/DOCX files still have no extracted text.
+        for response, embedding_status in zip(responses, statuses, strict=True):
+            response.embedding_status = embedding_status
+            if embedding_status == "completed":
+                response.message = "Document uploaded and indexed successfully."
         return responses
