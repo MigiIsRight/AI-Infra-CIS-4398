@@ -11,9 +11,6 @@ and chunks. Application startup never changes the schema.
 Apply `migrations/002_user_scoping_conversations.sql` next for consistent string
 user IDs, quarantined legacy ownership, and persistent conversation turns.
 
-Apply `migrations/003_embedding_ids.sql` after that so `ingestion_pipeline.py` can
-store chunk vectors in the `embedding` table. The API requires this migration at
-startup.
 Apply `migrations/003_vector_embeddings.sql` after migration 002 for generated
 embedding IDs and the persisted vector-search path. It preserves existing vectors
 and relationships; the API never applies this migration automatically. App startup
@@ -29,7 +26,6 @@ psql "$env:DATABASE_URL" -v ON_ERROR_STOP=1 -f rawberry-db/init/01_extensions.sq
 psql "$env:DATABASE_URL" -v ON_ERROR_STOP=1 -f rawberry-db/init/02_schema.sql
 psql "$env:DATABASE_URL" -v ON_ERROR_STOP=1 -f rawberry-db/migrations/001_api_persistence.sql
 psql "$env:DATABASE_URL" -v ON_ERROR_STOP=1 -f rawberry-db/migrations/002_user_scoping_conversations.sql
-psql "$env:DATABASE_URL" -v ON_ERROR_STOP=1 -f rawberry-db/migrations/003_embedding_ids.sql
 psql "$env:DATABASE_URL" -v ON_ERROR_STOP=1 -f rawberry-db/migrations/003_vector_embeddings.sql
 ```
 

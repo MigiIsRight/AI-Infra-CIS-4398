@@ -5,6 +5,7 @@ from io import BytesIO
 from uuid import uuid4
 
 # app resolves to rawberry-api/app through the repository-level app package
+from app.config import get_settings
 from app.postgres_repository import PostgresRepository
 from app.user_models import DocumentChunk, DocumentRecord
 
@@ -12,7 +13,6 @@ from app.user_models import DocumentChunk, DocumentRecord
 USER_ID_PATTERN = re.compile(r"^[!-~]{1,128}$")
 # matches DocumentService.ALLOWED_EXTENSIONS, minus .docx which has no loader yet
 SUPPORTED_EXTENSIONS = {".txt", ".pdf"}
-DEFAULT_EMBEDDING_MODEL = "models/gemini-embedding-001"
 
 
 #updated later to fit final format from front end team
@@ -86,13 +86,6 @@ def split_documents(pages, document_id, chunk_size=900, chunk_overlap=100):
     return chunks
 
 
-def embed_chunks(chunks):
-    from langchain_google_genai import GoogleGenerativeAIEmbeddings
-    model = os.getenv("EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL)
-    embeddings = GoogleGenerativeAIEmbeddings(model=model)
-    return embeddings.embed_documents([chunk.text for chunk in chunks]), model
-
-
 def ingest_document(repository, user_id, path, raw_bytes, pages):
     document_id = str(uuid4())
     #chunking text
@@ -100,9 +93,6 @@ def ingest_document(repository, user_id, path, raw_bytes, pages):
     if not chunks:
         print(f"No text extracted from {path}, skipping")
         return None
-
-    # embed before writing anything so a Gemini failure leaves no partial rows
-    vectors, model = embed_chunks(chunks)
 
     document = DocumentRecord(
         id=document_id,
@@ -115,10 +105,10 @@ def ingest_document(repository, user_id, path, raw_bytes, pages):
         metadata={"source": "ingestion_pipeline", "path": path},
     )
     # same (document, bytes, chunks) shape the /upload endpoint saves
-    repository.save_documents(user_id, [(document.model_dump(), raw_bytes, [c.model_dump() for c in chunks])])
-    #store embeddings in the embedding table
-    repository.save_embeddings(user_id, document_id, model, vectors)
-    print(f"Ingested {document.filename}: {len(chunks)} chunks, document id {document_id}")
+    # the repository embeds every chunk with the pinned Vertex model before writing,
+    # so a failed embedding leaves no partial rows
+    statuses = repository.save_documents(user_id, [(document.model_dump(), raw_bytes, [c.model_dump() for c in chunks])])
+    print(f"Ingested {document.filename}: {len(chunks)} chunks, embedding {statuses[0]}, document id {document_id}")
     return document_id
 
 
@@ -137,6 +127,9 @@ def main():
     database_url = os.getenv("DATABASE_URL", "").strip()
     if not database_url:
         parser.error("DATABASE_URL must be set")
+    # embeddings go through Vertex AI with Application Default Credentials
+    if not get_settings().google_cloud_project:
+        parser.error("GOOGLE_CLOUD_PROJECT must be set for Vertex AI embeddings")
 
     repository = PostgresRepository(database_url)
     repository.check_ready()

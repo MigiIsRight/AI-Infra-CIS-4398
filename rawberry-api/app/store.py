@@ -15,7 +15,6 @@ class InMemoryStore:
         self._documents: list[dict[str, Any]] = []
         self._document_contents: dict[str, bytes] = {}
         self._chunks: list[dict[str, Any]] = []
-        self._embeddings: dict[tuple[str, int, str], list[float]] = {}
         self._system_prompts: dict[str, str] = {}
         self._conversations: dict[str, dict[str, Any]] = {}
         self._turns: dict[str, list[dict[str, Any]]] = {}
@@ -30,21 +29,6 @@ class InMemoryStore:
                 self._document_contents[document['id']] = content
                 self._chunks.extend({**chunk, 'document_id': document['id']} for chunk in chunks)
         return [document['embedding_status'] for document, _, _ in prepared]
-
-    def save_embeddings(self, user_id: str, document_id: str, model: str, vectors: list[list[float]]) -> None:
-        with self._lock:
-            document = next((d for d in self._documents
-                             if d['id'] == document_id and d.get('user_id') == user_id), None)
-            chunks = sorted((c for c in self._chunks if c['document_id'] == document_id),
-                            key=lambda c: c['chunk_index'])
-            if document is None or not chunks:
-                raise ResourceNotFound()
-            if len(chunks) != len(vectors):
-                raise ValueError("Expected one embedding vector per chunk")
-            for chunk, vector in zip(chunks, vectors):
-                chunk['status'] = 'embedded'
-                self._embeddings[(document_id, chunk['chunk_index'], model)] = list(vector)
-            document['embedding_status'] = 'completed'
 
     def list_documents(self, user_id: str) -> list[dict[str, Any]]:
         with self._lock:
