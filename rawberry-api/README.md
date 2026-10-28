@@ -25,14 +25,14 @@ are not supported. `/` and `/health` do not require user context.
 
 - Configurable PostgreSQL persistence; isolated in-memory mode without `DATABASE_URL`.
 - Multi-file uploads: PDF, DOCX, and UTF-8 TXT; 25 MiB per-file limit.
-- TXT chunking and owner-filtered Stage 1 lexical-vector retrieval.
+- TXT chunking with persisted Vertex AI embeddings and owner-filtered pgvector search in PostgreSQL mode.
+- Deterministic hash-vector retrieval in the isolated in-memory development mode.
 - Optional Vertex AI Gemini generation, or mock responses for local development.
 - Per-user response preferences.
 - Independent conversations with ordered user/assistant history and generation states.
 - SSE chat lifecycle events; generated tokens are not streamed individually.
 
-PDF/DOCX text extraction, embeddings, semantic search, citations, and sharing remain
-future work. Documents enter the RAG pipeline only through `/upload`; pasted-text
+PDF/DOCX text extraction, citations, and sharing remain future work. Documents enter the RAG pipeline only through `/upload`; pasted-text
 submission is not supported. Chat messages remain part of conversation history.
 
 ## Run locally
@@ -135,7 +135,7 @@ or be recovered through the timeout rule. This is lifecycle reporting, not token
 - 404: missing resource or resource owned by another user.
 - 409: conversation already generating, or a completion for a superseded turn.
 - 502: generation failed; provider details are not returned.
-- 503: storage unavailable; configured PostgreSQL never silently falls back to memory.
+- 503: storage or embedding generation unavailable; configured PostgreSQL never silently falls back to memory.
 - File validation retains 400/413 responses with safe error codes.
 
 ```powershell
@@ -158,11 +158,43 @@ are not used by these routes and do not create authentication endpoints.
 
 ## Retrieval integration and merge checks
 
-API storage methods require a user ID. Both repository implementations load only
-that user's chunks, then pass them to the Stage 1 retrieval package. The package
-uses deterministic local feature-hash vectors and cosine similarity; these are not
-hosted semantic embeddings or a persisted pgvector search index. Upload status stays
-pending for that future indexing stage. Query-time local vectors are not durable indexes.
+API storage methods require a user ID. In PostgreSQL mode, new TXT uploads are
+embedded once with Vertex AI `gemini-embedding-001` at 768 dimensions using the
+`RETRIEVAL_DOCUMENT` task. The question uses `RETRIEVAL_QUERY`. PostgreSQL ranks
+persisted vectors by exact cosine distance and returns up to three positive matches
+for chat, with ownership enforced in SQL. Existing vectors with another model or
+dimension are preserved and excluded; chunks without embeddings are not searched.
+A positive similarity is a ranking signal, not a guarantee that a passage answers
+the question. An ANN index and relevance-threshold tuning are deferred.
+
+Apply migration `003_vector_embeddings.sql` after migrations 001 and 002 before
+starting the updated API. It adds an ID sequence for new embedding rows without
+replacing existing data. Startup refuses a configured database missing this migration.
+Coordinate execution on the shared Cloud SQL database with the database owner.
+Old TXT uploads remain stored; re-upload their original files to create searchable
+vectors. There is no automatic historical backfill in this sprint.
+
+Configure `DATABASE_URL`, `GOOGLE_CLOUD_PROJECT`, and `GOOGLE_CLOUD_LOCATION` for
+Cloud SQL and Vertex AI. Use Application Default Credentials locally or the Cloud
+Run service account in deployment, with Vertex AI permission. Cloud SQL connection
+networking and credentials remain the database team's responsibility. The application
+does not provision resources or apply migrations at startup.
+
+`USE_MOCK_CHAT` controls answer generation only. Configuring PostgreSQL activates
+real Vertex AI embedding calls even when mock chat is enabled. The model and vector
+size are pinned together in `app/retrieval/embeddings.py`; changing either requires
+re-embedding chunks. Model errors return a safe 503; there is no silent hash fallback.
+
+Embedding happens before the upload transaction, then original bytes, chunks, and
+vectors are saved together. An embedding or database failure leaves no partial batch.
+TXT upload responses report `embedding_status=completed` only after commit.
+PDF/DOCX uploads remain `pending` with no extracted chunks. Processing is synchronous;
+large TXT batches may be slow and will need a worker in a later sprint.
+
+Without `DATABASE_URL`, the in-memory repository keeps the existing local hash-vector
+path for development. Its data is temporary and its upload status stays pending;
+these hash vectors are not semantic model embeddings. Tests inject fake embeddings
+rather than making Google API calls.
 
 `app/user_models.py` is the canonical source for user-scoped contracts; `app/models.py`
 re-exports these types rather than keeping conflicting legacy definitions.

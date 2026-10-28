@@ -22,13 +22,14 @@ class InMemoryStore:
         self._lock = RLock()
 
 
-    def save_documents(self, user_id: str, documents: list[tuple[dict[str, Any], bytes, list[dict[str, Any]]]]) -> None:
+    def save_documents(self, user_id: str, documents: list[tuple[dict[str, Any], bytes, list[dict[str, Any]]]]) -> list[str]:
         prepared = deepcopy(documents)
         with self._lock:
             for document, content, chunks in prepared:
                 self._documents.append({**document, 'user_id': user_id})
                 self._document_contents[document['id']] = content
                 self._chunks.extend({**chunk, 'document_id': document['id']} for chunk in chunks)
+        return [document['embedding_status'] for document, _, _ in prepared]
 
     def save_embeddings(self, user_id: str, document_id: str, model: str, vectors: list[list[float]]) -> None:
         with self._lock:

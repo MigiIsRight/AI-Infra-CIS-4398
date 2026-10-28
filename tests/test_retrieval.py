@@ -57,11 +57,17 @@ class RetrievalPackageTests(unittest.TestCase):
 
         self.assertEqual(
             hints,
-            {"query": str, "limit": int, "owner_id": str | None, "return": list[RetrievalResult]},
+            {
+                "query": str,
+                "limit": int,
+                "owner_id": str | None,
+                "return": list[RetrievalResult],
+            },
         )
         service = RetrievalService(HashEmbeddingProvider(), InMemoryRetrievalRepository())
         self.assertEqual(service.retrieve("  "), [])
         self.assertEqual(service.retrieve("example query", limit=0), [])
+        self.assertEqual(service.retrieve("example query", limit=-1), [])
 
     def test_retrieval_ranks_matching_chunks_and_applies_limit(self) -> None:
         embeddings = HashEmbeddingProvider()
@@ -87,6 +93,21 @@ class RetrievalPackageTests(unittest.TestCase):
         self.assertEqual([r.document_id for r in service.retrieve('moon', owner_id='alice')], ['doc-alice'])
         self.assertEqual([r.document_id for r in service.retrieve('moon', owner_id='bob')], ['doc-bob'])
         self.assertEqual(service.retrieve('moon'), [])
+
+    def test_retrieval_matches_only_the_requested_owner(self) -> None:
+        embeddings = HashEmbeddingProvider()
+        repository = InMemoryRetrievalRepository()
+        embedding = embeddings.embed_document("shared query")
+        repository.upsert(1, "doc-a", "owned by A", embedding, owner_id="user-a")
+        repository.upsert(2, "doc-b", "owned by B", embedding, owner_id="user-b")
+        repository.upsert(3, "doc-none", "unowned", embedding)
+        service = RetrievalService(embeddings, repository)
+
+        owned_results = service.retrieve("shared query", owner_id="user-a")
+        unowned_results = service.retrieve("shared query")
+
+        self.assertEqual([result.chunk_id for result in owned_results], [1])
+        self.assertEqual([result.chunk_id for result in unowned_results], [3])
 
 if __name__ == "__main__":
     unittest.main()
