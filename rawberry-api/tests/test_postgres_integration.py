@@ -119,6 +119,24 @@ def test_failed_batch_rolls_back_documents_bytes_and_chunks(database_url):
             repository.get_document_content('alice', identifier)
 
 
+def test_ingestion_pipeline_indexes_documents_for_search(database_url):
+    pytest.importorskip('langchain_text_splitters')
+    import ingestion_pipeline
+
+    path = Path(__file__).resolve().parents[2] / 'testdocs' / 'google.txt'
+    raw_bytes = path.read_bytes()
+    repository = PostgresRepository(database_url)
+    document_id = ingestion_pipeline.ingest_document(
+        repository, 'alice', str(path), raw_bytes, ingestion_pipeline.extract_pages('.txt', raw_bytes))
+
+    documents = repository.list_documents('alice')
+    assert [(d['id'], d['embedding_status']) for d in documents] == [(document_id, 'completed')]
+    assert documents[0]['chunk_count'] == len(repository.list_chunks('alice')) > 1
+    results = repository.search_chunks('alice', path.read_text().split('.')[0])
+    assert results and results[0]['document_id'] == document_id
+    assert repository.search_chunks('bob', 'google') == []
+
+
 def test_invalid_api_batch_writes_nothing(database_url):
     repository = PostgresRepository(database_url)
     with TestClient(create_app(store=repository), headers={'X-User-ID': 'alice'}) as client:
