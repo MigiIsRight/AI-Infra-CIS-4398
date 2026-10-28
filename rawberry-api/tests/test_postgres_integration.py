@@ -53,6 +53,9 @@ def database_url():
             scoped_migration = (root / "migrations/002_user_scoping_conversations.sql").read_text()
             connection.execute(scoped_migration)
             connection.execute(scoped_migration)
+            embedding_migration = (root / "migrations/003_embedding_ids.sql").read_text()
+            connection.execute(embedding_migration)
+            connection.execute(embedding_migration)
         yield url
     finally:
         with psycopg.connect(base_url, autocommit=True) as admin:
@@ -110,6 +113,30 @@ def test_failed_batch_rolls_back_documents_bytes_and_chunks(database_url):
     for identifier in (first_id, second_id):
         with pytest.raises(ResourceNotFound):
             repository.get_document_content('alice', identifier)
+
+
+def test_embeddings_attach_to_owned_chunks_and_update_status(database_url):
+    import psycopg
+    repository = PostgresRepository(database_url)
+    identifier = str(uuid4())
+    document = {"id": identifier, "filename": "notes.txt", "file_type": ".txt", "size_bytes": 11,
+                "embedding_status": "pending", "metadata": {}}
+    chunks = [{"chunk_index": i, "text": text, "page_number": None, "status": "pending"}
+              for i, text in enumerate(["alpha", "beta"])]
+    repository.save_documents("alice", [(document, b"alpha beta", chunks)])
+
+    with pytest.raises(ResourceNotFound):
+        repository.save_embeddings("bob", identifier, "test-model", [[1.0, 0.0], [0.0, 1.0]])
+    repository.save_embeddings("alice", identifier, "test-model", [[1.0, 0.0], [0.0, 1.0]])
+    repository.save_embeddings("alice", identifier, "test-model", [[0.5, 0.5], [0.0, 1.0]])  # re-embed replaces
+
+    assert repository.list_documents("alice")[0]["embedding_status"] == "completed"
+    assert {c["status"] for c in repository.list_chunks("alice")} == {"embedded"}
+    with psycopg.connect(database_url) as connection:
+        rows = connection.execute(
+            "SELECT c.chunk_index, e.vector::text, e.model FROM embedding e JOIN chunk c ON c.id = e.chunk_id "
+            "ORDER BY c.chunk_index").fetchall()
+    assert rows == [(0, "[0.5,0.5]", "test-model"), (1, "[0,1]", "test-model")]
 
 
 def test_invalid_api_batch_writes_nothing(database_url):

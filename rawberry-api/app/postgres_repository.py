@@ -34,7 +34,7 @@ class PostgresRepository:
         with self._connection() as connection:
             row = connection.execute(
                 "SELECT version FROM schema_migration WHERE version = %s",
-                ('002_user_scoping_conversations',),
+                ('003_embedding_ids',),
             ).fetchone()
             if row is None:
                 raise StorageError("Required database migration is missing")
@@ -64,6 +64,34 @@ class PostgresRepository:
                         "VALUES (%s, %s, %s, %s, %s, CURRENT_DATE)",
                         (internal_id, chunk['chunk_index'], chunk['text'], chunk.get('page_number'), chunk['status']),
                     )
+
+    def save_embeddings(self, user_id: str, document_id: str, model: str, vectors: list[list[float]]) -> None:
+        with self._connection() as connection:
+            rows = connection.execute(
+                "SELECT c.id FROM chunk c JOIN document d ON d.id = c.doc_id "
+                "WHERE d.user_id = %s AND d.public_id::text = %s ORDER BY c.chunk_index FOR UPDATE",
+                (user_id, document_id),
+            ).fetchall()
+            if not rows:
+                raise ResourceNotFound()
+            if len(rows) != len(vectors):
+                raise ValueError("Expected one embedding vector per chunk")
+            for row, vector in zip(rows, vectors):
+                # Text literal cast avoids registering the pgvector adapter per connection.
+                connection.execute(
+                    "INSERT INTO embedding(chunk_id, vector, model, created_at) "
+                    "VALUES (%s, %s::vector, %s, CURRENT_DATE) "
+                    "ON CONFLICT (chunk_id, model) DO UPDATE SET vector = EXCLUDED.vector",
+                    (row['id'], '[' + ','.join(map(str, vector)) + ']', model),
+                )
+            connection.execute(
+                "UPDATE chunk SET processing_status = 'embedded' WHERE id = ANY(%s)",
+                ([row['id'] for row in rows],),
+            )
+            connection.execute(
+                "UPDATE document SET embedding_status = 'completed' "
+                "WHERE user_id = %s AND public_id::text = %s", (user_id, document_id),
+            )
 
     def list_documents(self, user_id: str) -> list[dict[str, Any]]:
         with self._connection() as connection:

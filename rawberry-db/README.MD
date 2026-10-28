@@ -11,6 +11,10 @@ and chunks. Application startup never changes the schema.
 Apply `migrations/002_user_scoping_conversations.sql` next for consistent string
 user IDs, quarantined legacy ownership, and persistent conversation turns.
 
+Apply `migrations/003_embedding_ids.sql` after that so `ingestion_pipeline.py` can
+store chunk vectors in the `embedding` table. The API requires this migration at
+startup.
+
 For a new database with pgvector installed, run these files in order from the
 repository root after configuring `DATABASE_URL`:
 
@@ -19,6 +23,7 @@ psql "$env:DATABASE_URL" -v ON_ERROR_STOP=1 -f rawberry-db/init/01_extensions.sq
 psql "$env:DATABASE_URL" -v ON_ERROR_STOP=1 -f rawberry-db/init/02_schema.sql
 psql "$env:DATABASE_URL" -v ON_ERROR_STOP=1 -f rawberry-db/migrations/001_api_persistence.sql
 psql "$env:DATABASE_URL" -v ON_ERROR_STOP=1 -f rawberry-db/migrations/002_user_scoping_conversations.sql
+psql "$env:DATABASE_URL" -v ON_ERROR_STOP=1 -f rawberry-db/migrations/003_embedding_ids.sql
 ```
 
 For an existing database, apply only missing migrations in order. Migration 002
